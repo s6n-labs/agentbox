@@ -79,54 +79,67 @@ pub fn is_root() -> bool {
     nix::unistd::geteuid().is_root()
 }
 
+/// Socket of a root daemon, which serves every user of the machine.
+const SYSTEM_SOCKET: &str = "/run/agentbox/daemon.sock";
+
+/// An explicit location from the environment, mainly for tests.
 fn env_path(var: &str) -> Option<PathBuf> {
     std::env::var_os(var)
-        .filter(|v| !v.is_empty())
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
-fn home() -> PathBuf {
-    env_path("HOME").unwrap_or_else(|| "/".into())
+/// Per-user state directory: `$XDG_STATE_HOME` where that exists (Linux), otherwise
+/// the platform's local data directory (macOS).
+fn user_state_dir() -> PathBuf {
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .unwrap_or_else(|| "/var/tmp".into())
+        .join("agentbox")
 }
 
 pub fn config_path() -> PathBuf {
-    env_path("AGENTBOX_CONFIG").unwrap_or_else(|| {
-        if is_root() {
-            "/etc/agentbox/config.toml".into()
-        } else {
-            env_path("XDG_CONFIG_HOME")
-                .unwrap_or_else(|| home().join(".config"))
-                .join("agentbox/config.toml")
-        }
-    })
+    if let Some(path) = env_path("AGENTBOX_CONFIG") {
+        return path;
+    }
+
+    if is_root() {
+        return "/etc/agentbox/config.toml".into();
+    }
+
+    dirs::config_dir()
+        .unwrap_or_else(|| "/etc".into())
+        .join("agentbox/config.toml")
 }
 
 pub fn socket_path() -> PathBuf {
-    env_path("AGENTBOX_SOCKET").unwrap_or_else(|| {
-        if is_root() {
-            return "/run/agentbox/daemon.sock".into();
-        }
-        // A root daemon serves every user; prefer it when present.
-        let system = PathBuf::from("/run/agentbox/daemon.sock");
-        if system.exists() {
-            return system;
-        }
-        env_path("XDG_RUNTIME_DIR")
-            .unwrap_or_else(|| format!("/tmp/agentbox-{}", nix::unistd::geteuid()).into())
-            .join("agentbox/daemon.sock")
-    })
+    if let Some(path) = env_path("AGENTBOX_SOCKET") {
+        return path;
+    }
+
+    // Prefer a root daemon when there is one.
+    let system = PathBuf::from(SYSTEM_SOCKET);
+    if is_root() || system.exists() {
+        return system;
+    }
+
+    // macOS has no runtime directory; the state directory is just as private.
+    dirs::runtime_dir()
+        .map(|dir| dir.join("agentbox"))
+        .unwrap_or_else(user_state_dir)
+        .join("daemon.sock")
 }
 
 pub fn state_dir() -> PathBuf {
-    env_path("AGENTBOX_STATE_DIR").unwrap_or_else(|| {
-        if is_root() {
-            "/var/lib/agentbox".into()
-        } else {
-            env_path("XDG_STATE_HOME")
-                .unwrap_or_else(|| home().join(".local/state"))
-                .join("agentbox")
-        }
-    })
+    if let Some(path) = env_path("AGENTBOX_STATE_DIR") {
+        return path;
+    }
+
+    if is_root() {
+        return "/var/lib/agentbox".into();
+    }
+
+    user_state_dir()
 }
 
 /// One GC root directory per run. A root daemon registers direct roots; otherwise

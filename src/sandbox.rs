@@ -135,8 +135,11 @@ pub fn env_vars(dev: &DevEnv, ctx: &Ctx) -> BTreeMap<String, String> {
     vars
 }
 
-pub fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// Quotes a value for a POSIX shell. Values with NUL bytes cannot be exported at all.
+fn sh_quote(value: &str) -> String {
+    shlex::try_quote(value)
+        .map(|quoted| quoted.into_owned())
+        .unwrap_or_else(|_| "''".to_owned())
 }
 
 /// Renders env.sh. POSIX exports only, so bash, zsh and sh can all source it.
@@ -156,15 +159,9 @@ pub fn env_sh(vars: &BTreeMap<String, String>, shell_hook: Option<&str>) -> Stri
 }
 
 /// Finds an executable the way execvp would, given a PATH value.
-pub fn resolve_in_path(path_var: &str, name: &str) -> Option<PathBuf> {
-    if name.contains('/') {
-        return Some(PathBuf::from(name));
-    }
-    path_var
-        .split(':')
-        .filter(|d| !d.is_empty())
-        .map(|d| Path::new(d).join(name))
-        .find(|p| p.is_file())
+/// Names containing a slash are resolved relative to `cwd`.
+pub fn resolve_in_path(path_var: &str, name: &str, cwd: &Path) -> Option<PathBuf> {
+    which::which_in(name, Some(path_var), cwd).ok()
 }
 
 /// Agents we know how to wire up (MCP server, turn hooks, resume).
@@ -265,7 +262,7 @@ pub fn bwrap_args(ctx: &Ctx, path_var: &str) -> Vec<String> {
     // Scripts expect these two even on NixOS.
     for (name, dir) in [("sh", "/bin"), ("env", "/usr/bin")] {
         if !covered(dir)
-            && let Some(target) = resolve_in_path(path_var, name)
+            && let Some(target) = resolve_in_path(path_var, name, ctx.workdir)
         {
             a.extend(["--symlink".into(), s(&target), format!("{dir}/{name}")]);
         }
@@ -425,8 +422,11 @@ mod tests {
         assert_eq!(vars["CARGO_HOME"], "/w/it's/.cache/cargo");
         assert!(!vars.contains_key("internal"));
         let sh = env_sh(&vars, dev.shell_hook.as_deref());
-        assert!(sh.contains(r"export HOME='/w/it'\''s/.agentbox/home'"));
-        assert!(sh.contains("eval 'echo hi'"));
+
+        // Whatever quoting style is used, a shell must read the values back unchanged.
+        let words: Vec<String> = sh.lines().filter_map(shlex::split).flatten().collect();
+        assert!(words.contains(&"HOME=/w/it's/.agentbox/home".to_string()));
+        assert!(words.windows(2).any(|pair| pair == ["eval", "echo hi"]));
     }
 
     #[test]

@@ -199,7 +199,8 @@ impl Daemon {
             return Ok(Applied::Hot);
         }
 
-        let agent_changed = run.exe_path != sandbox::resolve_in_path(&vars["PATH"], &run.argv[0]);
+        let agent_changed =
+            run.exe_path != sandbox::resolve_in_path(&vars["PATH"], &run.argv[0], &run.key.workdir);
         if policy_restart || agent_changed {
             schedule_restart(run);
             return Ok(Applied::Restart);

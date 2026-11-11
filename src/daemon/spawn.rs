@@ -118,7 +118,7 @@ impl Daemon {
         let pinned = self.pin_writable_dirs(run, &policy)?;
         let ctx = self.ctx(run, &policy, &pinned.by_path);
         let mut vars = sandbox::env_vars(&run.dev, &ctx);
-        let exe_path = sandbox::resolve_in_path(&vars["PATH"], &run.argv[0]);
+        let exe_path = sandbox::resolve_in_path(&vars["PATH"], &run.argv[0], &run.key.workdir);
         let argv = sandbox::adapt_argv(&run.argv, &self.exe_inside, resume.as_deref());
 
         let mut command = self.launcher(run, &ctx, &mut vars)?;
