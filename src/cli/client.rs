@@ -327,3 +327,95 @@ pub fn explain(client: &Client, what: String) -> anyhow::Result<()> {
     println!("{}", response.text);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn operation(op: &str, path: &str, value: Option<&str>) -> PatchOperation {
+        PatchOperation {
+            op: op.into(),
+            path: path.into(),
+            value: value.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn patch_operations_read_like_commands() {
+        let patch = [
+            operation("add", "/network/allow/2", Some("\"github.com:443\"")),
+            operation("remove", "/env/OLD", None),
+            operation("replace", "/fs/workdirWritable", Some("false")),
+        ];
+
+        assert_eq!(
+            format_patch(&patch),
+            [
+                "add /network/allow/2 \"github.com:443\"",
+                "remove /env/OLD",
+                "replace /fs/workdirWritable false",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_diff_lists_reason_policy_and_environment() {
+        let diff = Diff {
+            reason: Some("need github".into()),
+            policy_patch: vec![operation("add", "/network/allow/1", Some("\"github.com\""))],
+            text_diff: "--- a/flake.nix\n+++ b/flake.nix\n-old\n+new\n".into(),
+            derivation_changed: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            format_diff(&diff),
+            [
+                "# reason: need github",
+                "# policy",
+                "add /network/allow/1 \"github.com\"",
+                "# environment (derivation changed)",
+                "--- a/flake.nix",
+                "+++ b/flake.nix",
+                "-old",
+                "+new",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_diff_says_so() {
+        let lines = format_diff(&Diff::default());
+
+        assert_eq!(
+            lines,
+            [
+                "# policy",
+                "(unchanged)",
+                "# environment (derivation unchanged)"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unreachable_daemon_is_explained() {
+        let error = describe_error(ConnectError::unavailable("connection refused"));
+
+        let message = error.to_string();
+        assert!(
+            message.contains("is `agentbox daemon` running?"),
+            "{message}"
+        );
+        assert!(message.contains("connection refused"), "{message}");
+    }
+
+    #[test]
+    fn daemon_errors_are_shown_without_the_error_code() {
+        let error = describe_error(ConnectError::failed_precondition(
+            "error: undefined variable",
+        ));
+
+        assert_eq!(error.to_string(), "error: undefined variable");
+    }
+}

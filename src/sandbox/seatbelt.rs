@@ -108,4 +108,78 @@ mod tests {
         assert!(profile.contains("/Applications/Xcode.app"));
         assert!(profile.ends_with("(allow mach-lookup (global-name \"x\"))\n"));
     }
+
+    #[test]
+    fn strings_are_escaped() {
+        assert_eq!(string("/plain"), "\"/plain\"");
+        assert_eq!(string("/a\"b"), r#""/a\"b""#);
+        assert_eq!(string(r"/a\b"), r#""/a\\b""#);
+    }
+
+    #[test]
+    fn a_path_cannot_break_out_of_its_rule() {
+        let hostile = Path::new("/w\") (allow default) (\"");
+
+        let rule = subpath(hostile);
+
+        assert_eq!(rule, r#"(subpath "/w\") (allow default) (\"")"#);
+    }
+
+    #[test]
+    fn a_writable_workdir_gets_a_write_rule() {
+        let profile = with_ctx(&policy(true), &Config::default(), seatbelt_profile);
+
+        assert!(profile.contains("(allow file-write* (subpath \"/w/it's\"))"));
+    }
+
+    #[test]
+    fn the_run_directory_is_never_writable() {
+        let profile = with_ctx(&policy(true), &Config::default(), seatbelt_profile);
+
+        assert!(profile.contains("(allow file-read* (subpath \"/run/agentbox\"))"));
+        assert!(!profile.contains("(allow file-write* (subpath \"/run/agentbox\"))"));
+    }
+
+    #[test]
+    fn only_the_agent_sockets_and_the_proxy_are_reachable() {
+        let profile = with_ctx(&policy(true), &Config::default(), seatbelt_profile);
+        let network: Vec<&str> = profile
+            .lines()
+            .filter(|line| line.contains("network-outbound"))
+            .collect();
+
+        assert_eq!(
+            network,
+            [
+                "(allow network-outbound (remote tcp \"localhost:3128\"))",
+                "(allow network-outbound (literal \"/run/agentbox/agent.sock\"))",
+                "(allow network-outbound (literal \"/run/agentbox/hook.sock\"))",
+            ]
+        );
+    }
+
+    #[test]
+    fn capabilities_and_host_paths_are_expanded() {
+        let mut cfg = Config::default();
+        cfg.fs.readonly = vec!["/opt/tools".into()];
+
+        let mut without = policy(true);
+        without.capabilities.clear();
+
+        let profile = with_ctx(&without, &cfg, seatbelt_profile);
+
+        assert!(profile.contains("(subpath \"/opt/tools\")"));
+        assert!(!profile.contains("Xcode.app"));
+    }
+
+    #[test]
+    fn user_rules_come_after_the_base_denials() {
+        // In SBPL the last matching rule wins, so the workdir rule must follow the
+        // blanket denial of /Users.
+        let profile = with_ctx(&policy(true), &Config::default(), seatbelt_profile);
+
+        let deny_users = profile.find("(subpath \"/Users\")").unwrap();
+        let allow_workdir = profile.find("(subpath \"/w/it's\")").unwrap();
+        assert!(deny_users < allow_workdir);
+    }
 }

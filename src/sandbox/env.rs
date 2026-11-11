@@ -197,4 +197,131 @@ mod tests {
         assert!(words.contains(&"HOME=/w/it's/.agentbox/home".to_string()));
         assert!(words.windows(2).any(|pair| pair == ["eval", "echo hi"]));
     }
+
+    fn dev(variables: Value) -> DevEnv {
+        DevEnv::parse(&json!({ "variables": variables }))
+    }
+
+    #[test]
+    fn only_exported_strings_are_taken_from_the_dev_shell() {
+        let dev = dev(json!({
+            "EXPORTED": { "type": "exported", "value": "yes" },
+            "LOCAL": { "type": "var", "value": "no" },
+            "ARRAY": { "type": "array", "value": ["a", "b"] },
+            "TMPDIR": { "type": "exported", "value": "/build" },
+            "NIX_BUILD_TOP": { "type": "exported", "value": "/build" },
+        }));
+
+        assert_eq!(dev.vars.keys().collect::<Vec<_>>(), ["EXPORTED"]);
+        assert_eq!(dev.shell_hook, None);
+    }
+
+    #[test]
+    fn an_empty_shell_hook_is_no_hook() {
+        let dev = dev(json!({ "shellHook": { "type": "var", "value": "  \n" } }));
+
+        assert_eq!(dev.shell_hook, None);
+        assert!(!env_sh(&dev.vars, dev.shell_hook.as_deref()).contains("eval"));
+    }
+
+    #[test]
+    fn malformed_output_yields_an_empty_environment() {
+        assert!(DevEnv::parse(&json!({})).vars.is_empty());
+        assert!(DevEnv::parse(&json!({ "variables": [] })).vars.is_empty());
+    }
+
+    #[test]
+    fn the_repository_cannot_take_over_managed_variables() {
+        let policy = policy(true);
+        let cfg = Config::default();
+
+        // The test policy tries to set HOME and PATH to /evil.
+        let vars = with_ctx(&policy, &cfg, |ctx| env_vars(&DevEnv::default(), ctx));
+
+        assert_eq!(vars["HOME"], "/w/it's/.agentbox/home");
+        assert_eq!(vars["PATH"], "/run/agentbox-bin");
+        assert!(!vars.values().any(|value| value.contains("/evil")));
+    }
+
+    #[test]
+    fn the_sandbox_is_pointed_at_the_proxy_and_its_sockets() {
+        let policy = policy(true);
+        let cfg = Config::default();
+
+        let vars = with_ctx(&policy, &cfg, |ctx| env_vars(&DevEnv::default(), ctx));
+
+        for name in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"] {
+            assert_eq!(vars[name], "http://127.0.0.1:3128");
+        }
+        assert_eq!(vars["TMPDIR"], "/w/it's/.agentbox/tmp");
+        assert_eq!(vars["BASH_ENV"], "/run/agentbox/env.sh");
+        assert_eq!(vars["ZDOTDIR"], "/run/agentbox/zdotdir");
+        assert_eq!(vars["CLAUDE_ENV_FILE"], "/run/agentbox/claude-env");
+        assert_eq!(vars["AGENTBOX_SOCK"], "/run/agentbox/agent.sock");
+        assert_eq!(vars["AGENTBOX_HOOK_SOCK"], "/run/agentbox/hook.sock");
+    }
+
+    #[test]
+    fn policy_env_wins_over_the_dev_shell() {
+        let dev = dev(json!({ "CARGO_HOME": { "type": "exported", "value": "/from/shell" } }));
+        let policy = policy(true);
+        let cfg = Config::default();
+
+        let vars = with_ctx(&policy, &cfg, |ctx| env_vars(&dev, ctx));
+
+        assert_eq!(vars["CARGO_HOME"], "/w/it's/.cache/cargo");
+    }
+
+    #[test]
+    fn hostile_values_survive_a_round_trip_through_the_shell() {
+        let hostile = [
+            "$(touch /pwned)",
+            "`id`",
+            "a'b\"c",
+            "line1\nline2",
+            "; rm -rf /",
+            "$HOME",
+            "",
+        ];
+
+        for value in hostile {
+            let vars = BTreeMap::from([("X".to_string(), value.to_string())]);
+            let script = env_sh(&vars, None);
+
+            // Skip the comment line; a value may itself span several lines.
+            let (_comment, export) = script.split_once('\n').unwrap();
+            let words = shlex::split(export).unwrap();
+            assert_eq!(words, ["export", &format!("X={value}")], "{value:?}");
+        }
+    }
+
+    #[test]
+    fn values_with_nul_bytes_are_exported_empty() {
+        assert_eq!(quote("a\0b"), "''");
+    }
+
+    #[test]
+    fn executables_are_found_like_execvp_would() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+
+        let tool = bin.join("tool");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        std::fs::write(bin.join("data"), "not executable").unwrap();
+
+        let path_var = format!("/nonexistent:{}", bin.display());
+
+        assert_eq!(
+            resolve_in_path(&path_var, "tool", dir.path()),
+            Some(tool.clone())
+        );
+        assert_eq!(resolve_in_path(&path_var, "data", dir.path()), None);
+        assert_eq!(resolve_in_path(&path_var, "missing", dir.path()), None);
+
+        // A name with a slash ignores PATH and is relative to the working directory.
+        assert_eq!(resolve_in_path("", "./bin/tool", dir.path()), Some(tool));
+    }
 }

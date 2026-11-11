@@ -163,3 +163,90 @@ impl State {
         self.dirs.get(key)?.approved.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn key(workdir: &str, sandbox: &str) -> Key {
+        Key {
+            workdir: workdir.into(),
+            sandbox: sandbox.into(),
+        }
+    }
+
+    fn eval(drv: &str) -> Eval {
+        Eval {
+            pinned: "/nix/store/aaa-source".into(),
+            drv: drv.into(),
+            policy: json!({ "version": 1 }),
+        }
+    }
+
+    #[test]
+    fn approval_state_survives_a_restart() {
+        let mut state = State::default();
+        state.dirs.insert(
+            key("/w", "default"),
+            Dir {
+                approved: Some(eval("a.drv")),
+                agent_ran: true,
+                ..Default::default()
+            },
+        );
+        state.dirs.insert(key("/w", "ci"), Dir::default());
+
+        let json = serde_json::to_string(&state.to_saved()).unwrap();
+        let restored = State::from_saved(serde_json::from_str(&json).unwrap());
+
+        let default = &restored.dirs[&key("/w", "default")];
+        assert_eq!(default.approved, Some(eval("a.drv")));
+        assert!(default.agent_ran);
+
+        let ci = &restored.dirs[&key("/w", "ci")];
+        assert_eq!(ci.approved, None);
+        assert!(!ci.agent_ran);
+    }
+
+    #[test]
+    fn pending_requests_and_runs_do_not_survive() {
+        let (outcome, _decision) = tokio::sync::watch::channel(None);
+        let mut state = State::default();
+        state.next_run = 7;
+        state.dirs.insert(
+            key("/w", "default"),
+            Dir {
+                pending: Some(Pending {
+                    eval: eval("b.drv"),
+                    reason: "why".into(),
+                    outcome,
+                }),
+                ..Default::default()
+            },
+        );
+
+        let restored = State::from_saved(state.to_saved());
+
+        assert!(restored.dirs[&key("/w", "default")].pending.is_none());
+        assert!(restored.runs.is_empty());
+        assert_eq!(restored.next_run, 0);
+    }
+
+    #[test]
+    fn sandboxes_of_one_workdir_are_tracked_separately() {
+        let mut state = State::default();
+        state.dirs.insert(
+            key("/w", "default"),
+            Dir {
+                approved: Some(eval("a.drv")),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(state.approved(&key("/w", "default")), Some(&eval("a.drv")));
+        assert_eq!(state.approved(&key("/w", "other")), None);
+        assert_eq!(state.approved(&key("/elsewhere", "default")), None);
+    }
+}

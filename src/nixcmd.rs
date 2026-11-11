@@ -181,3 +181,136 @@ impl Nix<'_> {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn eval(pinned: &str, drv: &str, allow: &[&str]) -> Eval {
+        Eval {
+            pinned: pinned.to_owned(),
+            drv: drv.to_owned(),
+            policy: json!({ "network": { "allow": allow } }),
+        }
+    }
+
+    #[test]
+    fn tail_keeps_the_last_lines() {
+        assert_eq!(tail("a\nb\nc\n", 2), "b\nc");
+        assert_eq!(tail("a\nb", 10), "a\nb");
+        assert_eq!(tail("", 3), "");
+        assert_eq!(tail("only\n\n\n", 1), "only");
+    }
+
+    #[test]
+    fn evaluations_are_compared_by_outcome_not_by_source() {
+        let applied = eval("/nix/store/aaa-source", "/nix/store/x.drv", &["a"]);
+
+        // A comment-only edit pins a new source but evaluates to the same thing.
+        assert!(applied.same(&eval("/nix/store/bbb-source", "/nix/store/x.drv", &["a"])));
+
+        assert!(!applied.same(&eval("/nix/store/aaa-source", "/nix/store/y.drv", &["a"])));
+        assert!(!applied.same(&eval("/nix/store/aaa-source", "/nix/store/x.drv", &["b"])));
+    }
+
+    #[test]
+    fn the_installable_selects_system_and_sandbox() {
+        let cfg = Config::default();
+        let owner = Owner {
+            uid: 1000,
+            gid: 1000,
+            name: "me".into(),
+            home: "/home/me".into(),
+        };
+        let nix = Nix {
+            cfg: &cfg,
+            owner: &owner,
+            system: "aarch64-darwin",
+        };
+
+        assert_eq!(
+            nix.installable("/nix/store/aaa-source", "default"),
+            "path:/nix/store/aaa-source#agentSandboxes.aarch64-darwin.\"default\""
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_command_reports_the_end_of_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("nix");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\necho noise >&2\necho 'error: boom' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+
+        let cfg = Config {
+            nix_bin: fake.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let owner = Owner {
+            uid: nix::unistd::getuid().as_raw(),
+            gid: nix::unistd::getgid().as_raw(),
+            name: "me".into(),
+            home: dir.path().to_owned(),
+        };
+        let nix = Nix {
+            cfg: &cfg,
+            owner: &owner,
+            system: "x86_64-linux",
+        };
+
+        let error = nix.pin(dir.path()).await.unwrap_err();
+
+        assert_eq!(error, "noise\nerror: boom");
+    }
+
+    #[tokio::test]
+    async fn flags_that_keep_evaluation_safe_are_always_passed() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("nix");
+        // Records its arguments and prints what `nix eval` would.
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" > {}/args\necho '{{\"drv\":\"/nix/store/x.drv\",\"policy\":{{}}}}'\n",
+            dir.path().display()
+        );
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+
+        let cfg = Config {
+            nix_bin: fake.to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let owner = Owner {
+            uid: nix::unistd::getuid().as_raw(),
+            gid: nix::unistd::getgid().as_raw(),
+            name: "me".into(),
+            home: dir.path().to_owned(),
+        };
+        let nix = Nix {
+            cfg: &cfg,
+            owner: &owner,
+            system: "x86_64-linux",
+        };
+
+        let eval = nix.eval("/nix/store/aaa-source", "default").await.unwrap();
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+
+        assert_eq!(eval.drv, "/nix/store/x.drv");
+        assert_eq!(eval.pinned, "/nix/store/aaa-source");
+        assert!(
+            args.contains("--option accept-flake-config false"),
+            "{args}"
+        );
+        assert!(
+            args.contains("--option allow-import-from-derivation false"),
+            "{args}"
+        );
+        assert!(args.contains("--no-write-lock-file"), "{args}");
+    }
+}

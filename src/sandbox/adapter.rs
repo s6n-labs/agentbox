@@ -32,11 +32,14 @@ pub fn adapt_argv(argv: &[String], exe_inside: &Path, resume: Option<&str>) -> V
         },
     });
 
+    // Hook commands are run by a shell, so the path must survive word splitting.
+    let quoted_exe = shlex::try_quote(&exe).unwrap_or_default();
+
     // The hooks tell the daemon when a turn starts and ends, so a restart can wait
     // for the end of the turn.
     let hook = |state: &str| {
         json!([{
-            "hooks": [{ "type": "command", "command": format!("{exe} hook {state}") }],
+            "hooks": [{ "type": "command", "command": format!("{quoted_exe} hook {state}") }],
         }])
     };
     let settings = json!({
@@ -81,5 +84,48 @@ mod tests {
         let zsh = vec!["zsh".to_string()];
 
         assert_eq!(adapt_argv(&zsh, Path::new("/bin/agentbox"), None), zsh);
+    }
+
+    #[test]
+    fn agents_are_recognised_by_file_name() {
+        let is = |program: &str| is_agent(&[program.to_string()]);
+
+        assert!(is("claude"));
+        assert!(is("./claude"));
+        assert!(is("/nix/store/abc-claude-code/bin/claude"));
+
+        assert!(!is("claude-wrapper"));
+        assert!(!is("zsh"));
+    }
+
+    #[test]
+    fn the_wiring_is_valid_json_pointing_at_our_binary() {
+        let claude = vec!["claude".to_string(), "--verbose".to_string()];
+        let adapted = adapt_argv(&claude, Path::new("/opt/agent box/agentbox"), None);
+        let value_of = |flag: &str| {
+            let index = adapted.iter().position(|arg| arg == flag).unwrap();
+            serde_json::from_str::<serde_json::Value>(&adapted[index + 1]).unwrap()
+        };
+
+        // The original arguments come first, untouched.
+        assert_eq!(&adapted[..2], ["claude", "--verbose"]);
+        assert!(!adapted.contains(&"--continue".to_string()));
+
+        let mcp = value_of("--mcp-config");
+        assert_eq!(
+            mcp["mcpServers"]["agentbox"]["command"],
+            "/opt/agent box/agentbox"
+        );
+        assert_eq!(mcp["mcpServers"]["agentbox"]["args"], json!(["mcp"]));
+
+        let hooks = &value_of("--settings")["hooks"];
+        assert_eq!(
+            hooks["UserPromptSubmit"][0]["hooks"][0]["command"],
+            "'/opt/agent box/agentbox' hook busy"
+        );
+        assert_eq!(
+            hooks["Stop"][0]["hooks"][0]["command"],
+            "'/opt/agent box/agentbox' hook idle"
+        );
     }
 }

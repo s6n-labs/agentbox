@@ -243,4 +243,103 @@ mod tests {
 
         assert!(Policy::parse(&json).is_err());
     }
+
+    fn base() -> Value {
+        with_writable("target")
+    }
+
+    #[test]
+    fn only_version_1_is_supported() {
+        let mut json = base();
+        json["version"] = json!(2);
+
+        assert!(Policy::parse(&json).unwrap_err().contains("version"));
+    }
+
+    #[test]
+    fn missing_fields_are_rejected() {
+        let mut json = base();
+        json.as_object_mut().unwrap().remove("network");
+
+        assert!(Policy::parse(&json).is_err());
+    }
+
+    #[test]
+    fn unknown_capabilities_are_rejected() {
+        let mut json = base();
+        json["capabilities"] = json!(["root"]);
+
+        assert!(Policy::parse(&json).unwrap_err().contains("capability"));
+    }
+
+    #[test]
+    fn env_names_must_be_shell_identifiers() {
+        for bad in ["", "1ABC", "A-B", "A B", "A=B", "X;rm -rf /"] {
+            let mut json = base();
+            json["env"] = json!({ bad: "value" });
+
+            assert!(Policy::parse(&json).is_err(), "{bad:?}");
+        }
+
+        let mut json = base();
+        json["env"] = json!({ "_OK_1": "value", "CARGO_HOME": "x" });
+        assert!(Policy::parse(&json).is_ok());
+    }
+
+    #[test]
+    fn dot_paths_are_relative_too() {
+        assert!(Policy::parse(&with_writable(".")).is_ok());
+        assert!(Policy::parse(&with_writable("./target")).is_ok());
+        assert!(Policy::parse(&with_writable(".cache/cargo")).is_ok());
+    }
+
+    #[test]
+    fn the_host_can_permit_single_capabilities() {
+        let policy = policy(&[]);
+        let mut host = Config::default();
+
+        host.capabilities.allow = vec!["xcode".into()];
+        assert_eq!(policy.effective(&host, "macos").capabilities, ["xcode"]);
+
+        host.capabilities.allow = vec!["something-else".into()];
+        assert!(policy.effective(&host, "macos").capabilities.is_empty());
+    }
+
+    #[test]
+    fn the_host_layer_does_not_touch_fs_or_env() {
+        let policy = policy(&["example.com"]);
+        let mut host = Config::default();
+        host.network.allow = vec![];
+
+        let effective = policy.effective(&host, "linux");
+
+        assert_eq!(effective.fs, policy.fs);
+        assert_eq!(effective.env, policy.env);
+        assert!(effective.network.allow.is_empty());
+    }
+
+    #[test]
+    fn only_kernel_enforced_changes_need_a_restart() {
+        let old = policy(&["example.com"]);
+
+        let mut network = old.clone();
+        network.network.allow.push("example.org".into());
+        assert!(!needs_restart(&old, &network));
+
+        let mut env = old.clone();
+        env.env.insert("A".into(), "b".into());
+        assert!(!needs_restart(&old, &env));
+
+        let mut writable = old.clone();
+        writable.fs.writable.push("out".into());
+        assert!(needs_restart(&old, &writable));
+
+        let mut workdir = old.clone();
+        workdir.fs.workdir_writable = true;
+        assert!(needs_restart(&old, &workdir));
+
+        let mut capabilities = old.clone();
+        capabilities.capabilities.clear();
+        assert!(needs_restart(&old, &capabilities));
+    }
 }

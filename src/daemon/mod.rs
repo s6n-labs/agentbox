@@ -11,6 +11,8 @@ mod run;
 mod service;
 mod spawn;
 mod state;
+#[cfg(test)]
+mod testing;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -262,4 +264,105 @@ pub async fn main() -> anyhow::Result<()> {
     // Sandboxes die with us (bwrap --die-with-parent).
     let _ = std::fs::remove_file(&socket);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::Fixture;
+    use super::*;
+
+    #[test]
+    fn sandbox_names_are_plain_identifiers() {
+        for good in ["default", "ci", "my-sandbox", "a_b", "v2"] {
+            assert!(is_valid_sandbox_name(good), "{good}");
+        }
+
+        // The name is interpolated into a flake attribute path.
+        for bad in ["", "a.b", "a\"b", "a b", "a#b", "../x", "a;b"] {
+            assert!(!is_valid_sandbox_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_target_resolves_to_the_canonical_workdir() {
+        let fixture = Fixture::new();
+        let mut target = fixture.target();
+        target.workdir.push_str("/./");
+
+        let (key, owner) = fixture.daemon.target(fixture.uid(), &target).unwrap();
+
+        assert_eq!(key, fixture.key);
+        assert_eq!(owner.uid, fixture.uid());
+    }
+
+    #[test]
+    fn an_empty_sandbox_name_means_default() {
+        let fixture = Fixture::new();
+        let mut target = fixture.target();
+        target.sandbox.clear();
+
+        let (key, _) = fixture.daemon.target(fixture.uid(), &target).unwrap();
+
+        assert_eq!(key.sandbox, "default");
+    }
+
+    #[test]
+    fn targets_are_checked() {
+        let fixture = Fixture::new();
+        let code = |target: &Target, uid| fixture.daemon.target(uid, target).unwrap_err().code;
+
+        let mut missing = fixture.target();
+        missing.workdir.push_str("/does-not-exist");
+        assert_eq!(
+            code(&missing, fixture.uid()),
+            connectrpc::ErrorCode::NotFound
+        );
+
+        let mut bad_name = fixture.target();
+        bad_name.sandbox = "a.b".into();
+        assert_eq!(
+            code(&bad_name, fixture.uid()),
+            connectrpc::ErrorCode::InvalidArgument
+        );
+
+        // Someone else's directory: the peer's uid comes from the socket, not the request.
+        let stranger = fixture.uid() + 1;
+        assert_eq!(
+            code(&fixture.target(), stranger),
+            connectrpc::ErrorCode::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn a_file_is_not_a_workdir() {
+        let fixture = Fixture::new();
+        let file = fixture.key.workdir.join("file");
+        std::fs::write(&file, "").unwrap();
+        let mut target = fixture.target();
+        target.workdir = file.to_string_lossy().into_owned();
+
+        let error = fixture.daemon.target(fixture.uid(), &target).unwrap_err();
+
+        assert_eq!(error.code, connectrpc::ErrorCode::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn approvals_are_persisted_and_reloaded() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", super::testing::policy(&[]));
+        fixture.approve_current().await;
+
+        let restored = load_state(&fixture.daemon.state_dir);
+
+        assert_eq!(restored.approved(&fixture.key).unwrap().drv, "env1.drv");
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_state_file_starts_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_state(dir.path()).dirs.is_empty());
+
+        std::fs::write(dir.path().join("state.json"), "{ not json").unwrap();
+        assert!(load_state(dir.path()).dirs.is_empty());
+    }
 }

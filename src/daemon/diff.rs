@@ -106,3 +106,128 @@ pub fn make_diff(old: Option<&Eval>, new: &Eval, reason: Option<String>) -> Diff
         ..Default::default()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// A pinned source tree with the given files.
+    fn source(files: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+
+        for (name, content) in files {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+
+        dir
+    }
+
+    fn eval(source: &tempfile::TempDir, drv: &str, allow: &[&str]) -> Eval {
+        Eval {
+            pinned: source.path().to_string_lossy().into_owned(),
+            drv: drv.to_owned(),
+            policy: json!({ "network": { "allow": allow } }),
+        }
+    }
+
+    #[test]
+    fn policy_changes_become_patch_operations() {
+        let dir = source(&[]);
+        let old = eval(&dir, "a.drv", &["crates.io"]);
+        let new = eval(&dir, "a.drv", &["crates.io", "github.com:443"]);
+
+        let diff = make_diff(Some(&old), &new, Some("need github".into()));
+
+        assert_eq!(diff.reason.as_deref(), Some("need github"));
+        assert_eq!(diff.policy_patch.len(), 1);
+        assert_eq!(diff.policy_patch[0].op, "add");
+        assert_eq!(diff.policy_patch[0].path, "/network/allow/1");
+        assert_eq!(
+            diff.policy_patch[0].value.as_deref(),
+            Some("\"github.com:443\"")
+        );
+        assert!(!diff.derivation_changed);
+        assert!(diff.text_diff.is_empty());
+    }
+
+    #[test]
+    fn removals_carry_no_value() {
+        let dir = source(&[]);
+        let old = eval(&dir, "a.drv", &["crates.io", "github.com"]);
+        let new = eval(&dir, "a.drv", &["crates.io"]);
+
+        let diff = make_diff(Some(&old), &new, None);
+
+        assert_eq!(diff.policy_patch.len(), 1);
+        assert_eq!(diff.policy_patch[0].op, "remove");
+        assert_eq!(diff.policy_patch[0].value, None);
+    }
+
+    #[test]
+    fn nix_files_are_diffed_as_text() {
+        let before = source(&[
+            ("flake.nix", "{ a = 1; }\n"),
+            ("nix/shell.nix", "old\n"),
+            ("flake.lock", "{}\n"),
+        ]);
+        let after = source(&[
+            ("flake.nix", "{ a = 2; }\n"),
+            ("nix/shell.nix", "old\n"),
+            ("flake.lock", "{}\n"),
+            ("nix/extra.nix", "new\n"),
+        ]);
+
+        let diff = make_diff(
+            Some(&eval(&before, "a.drv", &[])),
+            &eval(&after, "b.drv", &[]),
+            None,
+        );
+
+        assert!(diff.derivation_changed);
+        assert!(diff.text_diff.contains("--- a/flake.nix"));
+        assert!(diff.text_diff.contains("-{ a = 1; }"));
+        assert!(diff.text_diff.contains("+{ a = 2; }"));
+        assert!(diff.text_diff.contains("+++ b/nix/extra.nix"));
+
+        // Unchanged files do not show up.
+        assert!(!diff.text_diff.contains("shell.nix"));
+        assert!(!diff.text_diff.contains("flake.lock"));
+    }
+
+    #[test]
+    fn only_nix_sources_are_diffed() {
+        let before = source(&[("flake.nix", "same\n")]);
+        let after = source(&[
+            ("flake.nix", "same\n"),
+            ("src/main.rs", "fn main() {}\n"),
+            ("README.md", "hello\n"),
+            (".direnv/cache.nix", "hidden\n"),
+            ("target/out.nix", "build output\n"),
+            ("node_modules/pkg/default.nix", "vendored\n"),
+        ]);
+
+        let diff = make_diff(
+            Some(&eval(&before, "a.drv", &[])),
+            &eval(&after, "a.drv", &[]),
+            None,
+        );
+
+        assert_eq!(diff.text_diff, "");
+    }
+
+    #[test]
+    fn the_first_evaluation_is_all_additions() {
+        let dir = source(&[("flake.nix", "{ }\n")]);
+
+        let diff = make_diff(None, &eval(&dir, "a.drv", &["crates.io"]), None);
+
+        assert!(diff.derivation_changed);
+        assert!(diff.text_diff.contains("+{ }"));
+        assert_eq!(diff.policy_patch[0].op, "replace");
+        assert_eq!(diff.policy_patch[0].path, "");
+    }
+}

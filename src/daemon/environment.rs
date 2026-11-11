@@ -318,3 +318,316 @@ fn schedule_restart(run: &mut Run) {
         trigger_restart(run, RESTART_NOTE.into());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::testing::{Fixture, policy};
+
+    fn reload_request(fixture: &Fixture, confirm: bool) -> ReloadRequest {
+        ReloadRequest {
+            target: MessageField::some(fixture.target()),
+            confirm,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_first_reload_applies_without_questions() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+
+        let request = reload_request(&fixture, false);
+        let response = fixture.daemon.reload(fixture.uid(), request).await.unwrap();
+
+        assert_eq!(response.result, "applied");
+        assert!(response.needs_confirm.is_unset());
+        assert_eq!(fixture.approved_drv().as_deref(), Some("env1.drv"));
+    }
+
+    #[tokio::test]
+    async fn reloading_unchanged_files_does_nothing() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.approve_current().await;
+
+        let request = reload_request(&fixture, false);
+        let response = fixture.daemon.reload(fixture.uid(), request).await.unwrap();
+
+        assert_eq!(response.result, "unchanged");
+    }
+
+    #[tokio::test]
+    async fn a_human_edit_is_applied_without_confirmation() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.approve_current().await;
+
+        // Nothing ran since the approval, so the edit can only be the human's.
+        fixture.set_eval("env2.drv", policy(&[]));
+        let request = reload_request(&fixture, false);
+        let response = fixture.daemon.reload(fixture.uid(), request).await.unwrap();
+
+        assert_eq!(response.result, "applied");
+    }
+
+    #[tokio::test]
+    async fn edits_after_an_agent_ran_need_confirmation() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.approve_current().await;
+        fixture
+            .daemon
+            .lock()
+            .dirs
+            .get_mut(&fixture.key)
+            .unwrap()
+            .agent_ran = true;
+        fixture.set_eval("env2.drv", policy(&["example.com"]));
+
+        let request = reload_request(&fixture, false);
+        let asked = fixture.daemon.reload(fixture.uid(), request).await.unwrap();
+
+        let diff = asked.needs_confirm.as_option().expect("a diff to confirm");
+        assert_eq!(diff.policy_patch[0].path, "/network/allow/0");
+        assert_eq!(asked.result, "");
+        assert_eq!(fixture.approved_drv().as_deref(), Some("env1.drv"));
+
+        // With --yes it goes through, and the question is not asked again.
+        let request = reload_request(&fixture, true);
+        let confirmed = fixture.daemon.reload(fixture.uid(), request).await.unwrap();
+        assert_eq!(confirmed.result, "applied");
+
+        let request = reload_request(&fixture, false);
+        let after = fixture.daemon.reload(fixture.uid(), request).await.unwrap();
+        assert_eq!(after.result, "unchanged");
+    }
+
+    #[tokio::test]
+    async fn an_evaluation_error_fails_the_reload() {
+        let fixture = Fixture::new();
+        fixture.fail_eval("error: syntax error");
+
+        let request = reload_request(&fixture, false);
+        let error = fixture
+            .daemon
+            .reload(fixture.uid(), request)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, connectrpc::ErrorCode::FailedPrecondition);
+        assert!(error.message.unwrap().contains("syntax error"));
+    }
+
+    #[tokio::test]
+    async fn applying_writes_env_sh_for_every_run() {
+        let fixture = Fixture::new();
+        let mut with_env = policy(&[]);
+        with_env["env"] = serde_json::json!({ "GREETING": "hello" });
+        fixture.set_eval("env1.drv", with_env);
+        fixture.add_run("r1", &["zsh"]);
+        fixture.add_run("r2", &["claude"]);
+
+        fixture.approve_current().await;
+
+        for id in ["r1", "r2"] {
+            let env_sh = fixture.with_run(id, |run| run.dir.join("env.sh"));
+            let script = std::fs::read_to_string(env_sh).unwrap();
+
+            assert!(script.contains("export GREETING=hello"), "{script}");
+            assert!(
+                script.contains("export PATH=/bin:/run/agentbox-bin"),
+                "{script}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_leaves_env_sh_and_the_approval_alone() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.add_run("r1", &["zsh"]);
+        fixture.approve_current().await;
+        let env_sh = fixture.with_run("r1", |run| run.dir.join("env.sh"));
+        let before = std::fs::read_to_string(&env_sh).unwrap();
+
+        fixture.set_eval("env2.drv", policy(&[]));
+        fixture.fail_build("error: boom");
+        let eval = fixture
+            .daemon
+            .evaluate(&fixture.key, &fixture.owner)
+            .await
+            .unwrap();
+        let error = fixture.daemon.apply(&fixture.key, &eval).await.unwrap_err();
+
+        assert!(error.contains("boom"));
+        assert_eq!(std::fs::read_to_string(&env_sh).unwrap(), before);
+        assert_eq!(fixture.approved_drv().as_deref(), Some("env1.drv"));
+    }
+
+    #[tokio::test]
+    async fn environment_and_network_changes_are_hot() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.add_run("r1", &["sh"]);
+        fixture.approve_current().await;
+        fixture.mark_running("r1");
+
+        fixture.set_eval("env2.drv", policy(&["example.com"]));
+        let eval = fixture
+            .daemon
+            .evaluate(&fixture.key, &fixture.owner)
+            .await
+            .unwrap();
+        let applied = fixture.daemon.apply(&fixture.key, &eval).await.unwrap();
+
+        assert_eq!(applied, Applied::Hot);
+        assert!(fixture.with_run("r1", |run| run.restart.is_none()));
+    }
+
+    /// A policy change the kernel-side profile enforces.
+    fn make_out_writable(fixture: &Fixture) {
+        let mut writable = policy(&[]);
+        writable["fs"]["writable"] = serde_json::json!(["out"]);
+        fixture.set_eval("env1.drv", writable);
+    }
+
+    #[tokio::test]
+    async fn a_busy_agent_is_restarted_only_when_its_turn_ends() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.add_run("r1", &["claude"]);
+        fixture.approve_current().await;
+        fixture.mark_running("r1");
+        fixture.daemon.set_busy("r1", true);
+
+        make_out_writable(&fixture);
+        let eval = fixture
+            .daemon
+            .evaluate(&fixture.key, &fixture.owner)
+            .await
+            .unwrap();
+        let applied = fixture.daemon.apply(&fixture.key, &eval).await.unwrap();
+
+        assert_eq!(applied, Applied::Restart);
+        assert!(fixture.with_run("r1", |run| run.restart.is_none()));
+        assert!(fixture.with_run("r1", |run| run.restart_when_idle.is_some()));
+
+        // The Stop hook fires.
+        fixture.daemon.set_busy("r1", false);
+
+        assert!(fixture.with_run("r1", |run| run.restart.is_some()));
+        assert!(fixture.with_run("r1", |run| run.restart_when_idle.is_none()));
+    }
+
+    #[tokio::test]
+    async fn an_idle_agent_is_restarted_at_once() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.add_run("r1", &["claude"]);
+        fixture.approve_current().await;
+        fixture.mark_running("r1");
+
+        make_out_writable(&fixture);
+        let eval = fixture
+            .daemon
+            .evaluate(&fixture.key, &fixture.owner)
+            .await
+            .unwrap();
+        let applied = fixture.daemon.apply(&fixture.key, &eval).await.unwrap();
+
+        assert_eq!(applied, Applied::Restart);
+        assert!(fixture.with_run("r1", |run| run.restart.is_some()));
+    }
+
+    #[tokio::test]
+    async fn a_humans_shell_is_never_restarted() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.add_run("r1", &["sh"]);
+        fixture.approve_current().await;
+        fixture.mark_running("r1");
+
+        make_out_writable(&fixture);
+        let eval = fixture
+            .daemon
+            .evaluate(&fixture.key, &fixture.owner)
+            .await
+            .unwrap();
+        let applied = fixture.daemon.apply(&fixture.key, &eval).await.unwrap();
+
+        // The change needs a new sandbox, but the human decides when to re-enter.
+        assert_eq!(applied, Applied::Restart);
+        assert!(fixture.with_run("r1", |run| run.restart.is_none()));
+        assert!(fixture.with_run("r1", |run| run.restart_when_idle.is_none()));
+    }
+
+    #[tokio::test]
+    async fn runs_that_have_not_started_are_never_restarted() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.add_run("r1", &["claude"]);
+        fixture.approve_current().await;
+
+        make_out_writable(&fixture);
+        let eval = fixture
+            .daemon
+            .evaluate(&fixture.key, &fixture.owner)
+            .await
+            .unwrap();
+        let applied = fixture.daemon.apply(&fixture.key, &eval).await.unwrap();
+
+        assert_eq!(applied, Applied::Hot);
+    }
+
+    #[tokio::test]
+    async fn approval_remembers_whether_something_is_still_running() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        fixture.add_run("r1", &["sh"]);
+
+        fixture.approve_current().await;
+        assert!(!fixture.daemon.lock().dirs[&fixture.key].agent_ran);
+
+        // With a live sandbox, later edits may still come from the agent.
+        fixture.mark_running("r1");
+        fixture.set_eval("env2.drv", policy(&[]));
+        fixture.approve_current().await;
+        assert!(fixture.daemon.lock().dirs[&fixture.key].agent_ran);
+    }
+
+    #[tokio::test]
+    async fn the_effective_policy_is_capped_and_shows_the_host_layer() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&["example.com"]));
+        let request = |effective| GetPolicyRequest {
+            target: MessageField::some(fixture.target()),
+            effective,
+            ..Default::default()
+        };
+
+        let repo = fixture
+            .daemon
+            .policy(fixture.uid(), request(false))
+            .await
+            .unwrap();
+        let repo: Value = serde_json::from_str(&repo.policy_json).unwrap();
+        assert_eq!(repo, policy(&["example.com"]));
+
+        let effective = fixture
+            .daemon
+            .policy(fixture.uid(), request(true))
+            .await
+            .unwrap();
+        let effective: Value = serde_json::from_str(&effective.policy_json).unwrap();
+        assert_eq!(effective["network"]["allow"], json!(["example.com"]));
+        assert_eq!(effective["host"]["fs"]["readonly"], json!([]));
+    }
+
+    #[test]
+    fn outcomes_use_the_documented_result_names() {
+        assert_eq!(Applied::Hot.kind(), "applied");
+        assert_eq!(Applied::Restart.kind(), "restart_scheduled");
+        assert_eq!(Applied::Restart.outcome().kind, "restart_scheduled");
+    }
+}

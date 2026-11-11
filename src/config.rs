@@ -151,3 +151,67 @@ pub fn gcroots_dir() -> PathBuf {
         state_dir().join("gcroots")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_permit_what_repositories_ask_for() {
+        let cfg: Config = toml::from_str("").unwrap();
+
+        assert_eq!(cfg.nix_bin, "nix");
+        assert_eq!(cfg.agent_user, None);
+        assert_eq!(cfg.network.allow, ["*"]);
+        assert_eq!(cfg.capabilities.allow, ["*"]);
+        assert!(cfg.fs.readonly.is_empty());
+        assert!(cfg.seatbelt.extra.is_empty());
+    }
+
+    #[test]
+    fn every_section_can_be_set() {
+        let cfg: Config = toml::from_str(
+            r#"
+            nix_bin = "/run/current-system/sw/bin/nix"
+            agent_user = "agentbox"
+            approval_timeout_secs = 30
+
+            [network]
+            allow = ["*.example.com", "github.com:443"]
+
+            [capabilities]
+            allow = []
+
+            [fs]
+            readonly = ["/usr"]
+            writable = ["/var/cache/shared"]
+
+            [seatbelt]
+            extra = "(allow mach-lookup)"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.agent_user.as_deref(), Some("agentbox"));
+        assert_eq!(cfg.approval_timeout_secs, 30);
+        assert_eq!(cfg.network.allow, ["*.example.com", "github.com:443"]);
+        assert!(cfg.capabilities.allow.is_empty());
+        assert_eq!(cfg.fs.readonly, [PathBuf::from("/usr")]);
+        assert_eq!(cfg.fs.writable, [PathBuf::from("/var/cache/shared")]);
+        assert_eq!(cfg.seatbelt.extra, "(allow mach-lookup)");
+    }
+
+    #[test]
+    fn typos_are_errors_not_silently_ignored() {
+        assert!(toml::from_str::<Config>("nix_binary = \"nix\"").is_err());
+        assert!(toml::from_str::<Config>("[network]\nalow = []").is_err());
+        assert!(toml::from_str::<Config>("[filesystem]\nreadonly = []").is_err());
+    }
+
+    #[test]
+    fn an_empty_allow_list_denies_everything() {
+        let cfg: Config = toml::from_str("[network]\nallow = []").unwrap();
+
+        assert!(cfg.network.allow.is_empty());
+    }
+}

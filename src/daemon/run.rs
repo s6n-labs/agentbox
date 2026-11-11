@@ -529,3 +529,195 @@ impl Daemon {
         self.effective(approved).ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::testing::{Fixture, policy};
+
+    async fn with_run(allow: &[&str]) -> Fixture {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(allow));
+        fixture.add_run("r1", &["sh"]);
+        fixture.approve_current().await;
+
+        fixture
+    }
+
+    #[tokio::test]
+    async fn the_proxy_follows_the_applied_policy() {
+        let fixture = with_run(&["example.com", "github.com:443"]).await;
+        let daemon = &fixture.daemon;
+
+        assert!(daemon.check_network("r1", "example.com", 80));
+        assert!(daemon.check_network("r1", "github.com", 443));
+        assert!(!daemon.check_network("r1", "github.com", 22));
+        assert!(!daemon.check_network("r1", "example.org", 443));
+
+        // A hot reload changes the answer without touching the run.
+        fixture.set_eval("env2.drv", policy(&["example.org"]));
+        fixture.approve_current().await;
+        assert!(daemon.check_network("r1", "example.org", 443));
+        assert!(!daemon.check_network("r1", "example.com", 80));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_run_reaches_nothing() {
+        let fixture = with_run(&["example.com"]).await;
+
+        assert!(!fixture.daemon.check_network("nope", "example.com", 443));
+    }
+
+    #[tokio::test]
+    async fn denials_are_recorded_per_run() {
+        let fixture = with_run(&["example.com"]).await;
+        fixture.add_run("r2", &["sh"]);
+        let daemon = &fixture.daemon;
+
+        daemon.check_network("r1", "evil.example", 443);
+        daemon.check_network("r2", "other.example", 80);
+        daemon.check_network("r1", "example.com", 443);
+
+        let mine: Vec<String> = daemon
+            .run_denials("r1")
+            .into_iter()
+            .map(|d| d.target)
+            .collect();
+        assert_eq!(mine, ["evil.example:443"]);
+
+        let all = daemon
+            .denials(fixture.uid(), &fixture.target())
+            .unwrap()
+            .denials;
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].kind, "network");
+        assert!(all[0].time > 0);
+    }
+
+    #[tokio::test]
+    async fn the_denial_log_is_bounded() {
+        let fixture = with_run(&[]).await;
+
+        for port in 0..(MAX_DENIALS as u16 + 10) {
+            fixture.daemon.check_network("r1", "evil.example", port);
+        }
+
+        let denials = fixture.daemon.run_denials("r1");
+        assert_eq!(denials.len(), MAX_DENIALS);
+        // The oldest entries were dropped.
+        assert_eq!(denials[0].target, "evil.example:10");
+    }
+
+    #[tokio::test]
+    async fn the_agent_sees_its_effective_policy() {
+        let fixture = with_run(&["example.com"]).await;
+
+        let policy = fixture.daemon.run_policy("r1").unwrap();
+
+        assert_eq!(policy.network.allow, ["example.com"]);
+        assert!(fixture.daemon.run_policy("nope").is_none());
+    }
+
+    fn wait_request(run_id: &str) -> WaitRunRequest {
+        WaitRunRequest {
+            run_id: run_id.into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn waiting_returns_the_exit_code_even_if_the_run_already_ended() {
+        let fixture = with_run(&[]).await;
+        let run_dir = fixture.with_run("r1", |run| run.dir.clone());
+
+        fixture.daemon.finish("r1", 7);
+
+        let response = fixture
+            .daemon
+            .wait_run(fixture.uid(), wait_request("r1"))
+            .await;
+        assert_eq!(response.unwrap().exit_code, 7);
+
+        // The run and its directory are gone; the exit code was handed out once.
+        assert!(!fixture.daemon.lock().runs.contains_key("r1"));
+        assert!(!run_dir.exists());
+        let again = fixture
+            .daemon
+            .wait_run(fixture.uid(), wait_request("r1"))
+            .await;
+        assert_eq!(again.unwrap_err().code, connectrpc::ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn waiting_blocks_until_the_run_ends() {
+        let fixture = with_run(&[]).await;
+        let daemon = fixture.daemon.clone();
+        let uid = fixture.uid();
+
+        let waiting = tokio::spawn(async move { daemon.wait_run(uid, wait_request("r1")).await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+
+        fixture.daemon.finish("r1", 0);
+
+        assert_eq!(waiting.await.unwrap().unwrap().exit_code, 0);
+    }
+
+    #[tokio::test]
+    async fn runs_belong_to_whoever_started_them() {
+        let fixture = with_run(&[]).await;
+        let stranger = fixture.uid() + 1;
+
+        let waited = fixture.daemon.wait_run(stranger, wait_request("r1")).await;
+        assert_eq!(
+            waited.unwrap_err().code,
+            connectrpc::ErrorCode::PermissionDenied
+        );
+
+        let signal = SignalRunRequest {
+            run_id: "r1".into(),
+            signal: 15,
+            ..Default::default()
+        };
+        let signalled = fixture.daemon.signal_run(stranger, signal);
+        assert_eq!(
+            signalled.unwrap_err().code,
+            connectrpc::ErrorCode::PermissionDenied
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_signals_are_rejected() {
+        let fixture = with_run(&[]).await;
+        let signal = SignalRunRequest {
+            run_id: "r1".into(),
+            signal: 9999,
+            ..Default::default()
+        };
+
+        let error = fixture
+            .daemon
+            .signal_run(fixture.uid(), signal)
+            .unwrap_err();
+
+        assert_eq!(error.code, connectrpc::ErrorCode::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn a_run_needs_a_command() {
+        let fixture = Fixture::new();
+        fixture.set_eval("env1.drv", policy(&[]));
+        let request = CreateRunRequest {
+            target: MessageField::some(fixture.target()),
+            ..Default::default()
+        };
+
+        let error = fixture
+            .daemon
+            .create_run(fixture.uid(), request)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, connectrpc::ErrorCode::InvalidArgument);
+    }
+}

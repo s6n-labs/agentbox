@@ -26,6 +26,7 @@ dependencies = [
  "serde_json",
  "shlex",
  "similar",
+ "tempfile",
  "tokio",
  "toml",
  "tower",

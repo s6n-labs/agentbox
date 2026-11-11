@@ -130,4 +130,57 @@ mod tests {
         assert!(explain("./src").contains("read-only"));
         assert!(explain("/home/me").contains("denied"));
     }
+
+    #[test]
+    fn says_when_the_host_layer_is_the_reason() {
+        let policy = policy(&["crates.io"]);
+        let mut host = Config::default();
+        host.network.allow = vec!["*.com".into()];
+
+        let answer = explain(&policy, &host, "linux", Path::new("/w"), "crates.io");
+
+        assert!(answer.contains("denied by host layer"), "{answer}");
+        assert!(answer.contains("network.allow[0]"), "{answer}");
+    }
+
+    #[test]
+    fn ports_default_to_https() {
+        let policy = policy(&["github.com:22"]);
+        let host = Config::default();
+        let explain = |what| explain(&policy, &host, "linux", Path::new("/w"), what);
+
+        assert!(explain("github.com").starts_with("github.com:443: denied"));
+        assert!(explain("github.com:22").starts_with("github.com:22: allowed"));
+    }
+
+    #[test]
+    fn explains_paths_outside_the_workdir() {
+        let policy = policy(&[]);
+        let mut host = Config::default();
+        host.fs.readonly = vec!["/usr".into()];
+        host.fs.writable = vec!["/var/cache/shared".into()];
+        let explain = |what| explain(&policy, &host, "linux", Path::new("/w"), what);
+
+        assert!(explain("/usr/bin/env").contains("read-only by host fs.readonly[0]"));
+        assert!(explain("/var/cache/shared/x").contains("read-write by host fs.writable[0]"));
+        assert!(explain("/nix/store/abc-hello").contains("read-only: shared nix store"));
+        assert!(explain("/nix/var/nix/db").contains("denied"));
+        assert!(explain("/etc/passwd").contains("denied: not visible"));
+    }
+
+    #[test]
+    fn explains_paths_inside_the_workdir() {
+        let host = Config::default();
+
+        let read_only = policy(&[]);
+        let explain_ro = |what| explain(&read_only, &host, "linux", Path::new("/w"), what);
+        assert!(explain_ro("/w/.agentbox/home/.cache").contains("sandbox-managed"));
+        assert!(explain_ro("/w/target").contains("fs.writable[0]"));
+        assert!(explain_ro("/w/targets").contains("read-only"));
+
+        let mut writable = policy(&[]);
+        writable.fs.workdir_writable = true;
+        let answer = explain(&writable, &host, "linux", Path::new("/w"), "./src/main.rs");
+        assert!(answer.contains("read-write: workdir"), "{answer}");
+    }
 }
