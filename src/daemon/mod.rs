@@ -46,6 +46,9 @@ pub struct Daemon {
     exe: PathBuf,
     exe_inside: PathBuf,
 
+    /// The platform's sandbox launcher: `bwrap` or `sandbox-exec`.
+    launcher: PathBuf,
+
     /// uid and gid of `agent_user`, when running as root.
     agent_ids: Option<(u32, u32)>,
 
@@ -164,6 +167,18 @@ fn reset_run_dirs(state_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Finds the sandbox launcher once, with the daemon's own PATH.
+///
+/// Sandboxes are started with their own environment, so a bare `bwrap` would be looked
+/// up in the sandbox's PATH instead.
+fn launcher() -> anyhow::Result<PathBuf> {
+    if cfg!(target_os = "macos") {
+        return Ok("/usr/bin/sandbox-exec".into());
+    }
+
+    which::which("bwrap").context("bubblewrap (bwrap) is not on PATH")
+}
+
 /// Looks up the dedicated agent user. Only a root daemon can switch users.
 fn agent_ids(cfg: &Config) -> anyhow::Result<Option<(u32, u32)>> {
     let Some(name) = &cfg.agent_user else {
@@ -229,6 +244,7 @@ pub async fn main() -> anyhow::Result<()> {
         system,
         exe,
         exe_inside,
+        launcher: launcher()?,
     });
 
     let (listener, socket) = bind_socket()?;

@@ -79,7 +79,7 @@ impl Daemon {
             let profile = run.dir.join("profile.sb");
             write_atomic(&profile, &sandbox::seatbelt_profile(ctx)).map_err(|e| e.to_string())?;
 
-            let mut command = Command::new("/usr/bin/sandbox-exec");
+            let mut command = Command::new(&self.launcher);
             command.arg("-f").arg(profile);
             return Ok(command);
         }
@@ -91,7 +91,7 @@ impl Daemon {
             format!("{BRIDGE_PORT}:{}", proxy_socket.display()),
         );
 
-        let mut command = Command::new("bwrap");
+        let mut command = Command::new(&self.launcher);
         command.args(sandbox::bwrap_args(ctx, &vars["PATH"]));
         Ok(command)
     }

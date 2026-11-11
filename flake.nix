@@ -25,25 +25,37 @@
           )
         );
 
-      packages = lib.genAttrs systems (system: {
-        default = nixpkgs.legacyPackages.${system}.rustPlatform.buildRustPackage {
-          pname = "agentbox";
-          version = "0.1.0";
-          src = lib.fileset.toSource {
-            root = ./.;
-            fileset = lib.fileset.unions [
-              ./Cargo.toml
-              ./Cargo.lock
-              ./build.rs
-              ./proto
-              ./src
-            ];
-          };
-          cargoLock.lockFile = ./Cargo.lock;
+      packages = lib.genAttrs systems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.rustPlatform.buildRustPackage {
+            pname = "agentbox";
+            version = "0.1.0";
+            src = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                ./Cargo.toml
+                ./Cargo.lock
+                ./build.rs
+                ./proto
+                ./src
+              ];
+            };
+            cargoLock.lockFile = ./Cargo.lock;
 
-          # build.rs generates the Connect RPC code from proto/ with this protoc.
-          PROTOC = "${nixpkgs.legacyPackages.${system}.protobuf}/bin/protoc";
-        };
-      });
+            # build.rs generates the Connect RPC code from proto/ with this protoc.
+            PROTOC = "${pkgs.protobuf}/bin/protoc";
+
+            # The daemon starts sandboxes with bubblewrap on Linux.
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postInstall = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              wrapProgram $out/bin/agentbox --prefix PATH : ${lib.makeBinPath [ pkgs.bubblewrap ]}
+            '';
+          };
+        }
+      );
     };
 }

@@ -13,8 +13,7 @@ expect() { case $2 in *"$3"*) ok "$1" ;; *) fail "$1: expected to find '$3'" "$2
 cd /src
 [ -e flake.lock ] || { nix flake lock path:/src; chown "$HOST_OWNER" flake.lock; }
 nix build path:/src -o /agentbox
-nix build --inputs-from path:/src nixpkgs#bubblewrap -o /bwrap
-export PATH="/agentbox/bin:/bwrap/bin:$PATH"
+export PATH="/agentbox/bin:$PATH"
 ok "the flake package builds"
 
 # --- a repository using the library
