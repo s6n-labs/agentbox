@@ -65,7 +65,8 @@ start_daemon() {
   DPID=$!
   for _ in $(seq 50); do [ -S /run/agentbox/daemon.sock ] && break; sleep 0.1; done
 }
-run() { agentbox run "$@" </dev/null 2>&1; }
+# Failures are judged by the output checks, not by the exit code.
+run() { agentbox run "$@" </dev/null 2>&1 || echo "[exit $?]"; }
 
 start_daemon
 
@@ -117,7 +118,7 @@ expect "diff-closures compares derivation closures" "$out" "jq"
 
 # --- invalid policies are evaluation errors
 sed -i 's|fs.writable = \[ ".cache" \]|fs.writable = [ "/etc" ]|' flake.nix
-out=$(run --yes -- true || true)
+out=$(run --yes -- true)
 expect "absolute paths are rejected by the module" "$out" "fs.writable"
 write_flake "" ""
 

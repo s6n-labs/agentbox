@@ -22,7 +22,7 @@ use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::config::{self, Config, is_root};
-use crate::nixcmd::{Eval, Owner};
+use crate::nixcmd::{Eval, Nix, Owner};
 use crate::policy::Policy;
 use crate::proto::Target;
 use crate::rpc;
@@ -80,6 +80,15 @@ impl Daemon {
 
         if let Err(e) = write_atomic(&self.state_dir.join("state.json"), &json) {
             eprintln!("agentbox: cannot persist state: {e}");
+        }
+    }
+
+    /// Nix, run on behalf of `owner`.
+    fn nix<'a>(&'a self, owner: &'a Owner) -> Nix<'a> {
+        Nix {
+            cfg: &self.cfg,
+            owner,
+            system: &self.system,
         }
     }
 

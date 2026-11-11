@@ -9,7 +9,7 @@ use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 
-use crate::nixcmd::{self, Eval, Owner};
+use crate::nixcmd::{Eval, Owner};
 use crate::policy::{self, Policy};
 use crate::proto::*;
 use crate::sandbox::{self, Ctx, DevEnv};
@@ -80,8 +80,9 @@ fn policy_response(policy: &Value) -> GetPolicyResponse {
 impl Daemon {
     /// Pins the current files and evaluates them. Nothing is built.
     pub(super) async fn evaluate(&self, key: &Key, owner: &Owner) -> Result<Eval, String> {
-        let pinned = nixcmd::pin(&self.cfg, owner, &key.workdir).await?;
-        let eval = nixcmd::eval(&self.cfg, owner, &pinned, &self.system, &key.sandbox).await?;
+        let nix = self.nix(owner);
+        let pinned = nix.pin(&key.workdir).await?;
+        let eval = nix.eval(&pinned, &key.sandbox).await?;
 
         // Reject invalid policies here, so they surface as evaluation errors.
         Policy::parse(&eval.policy)?;
@@ -165,15 +166,8 @@ impl Daemon {
 
         let mut built = Vec::new();
         for (run_id, owner, profile) in runs {
-            let json = nixcmd::build_env(
-                &self.cfg,
-                &owner,
-                eval,
-                &self.system,
-                &key.sandbox,
-                &profile,
-            )
-            .await?;
+            let nix = self.nix(&owner);
+            let json = nix.build_env(eval, &key.sandbox, &profile).await?;
             built.push((run_id, DevEnv::parse(&json)));
         }
 

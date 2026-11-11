@@ -5,7 +5,7 @@ use std::sync::Arc;
 use buffa::MessageField;
 use tokio::sync::watch;
 
-use crate::nixcmd::{self, tail};
+use crate::nixcmd::tail;
 use crate::proto::*;
 use connectrpc::ConnectError;
 
@@ -188,7 +188,9 @@ impl Daemon {
         });
         let (old, new) = drvs.ok_or_else(|| not_found("nothing to compare"))?;
 
-        let text = nixcmd::closure_diff(&self.cfg, &owner, &old, &new)
+        let text = self
+            .nix(&owner)
+            .closure_diff(&old, &new)
             .await
             .map_err(precondition)?;
         Ok(ClosureDiffResponse {
