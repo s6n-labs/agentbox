@@ -71,8 +71,10 @@ refute "the daemon socket is not visible" "$out" "$AGENTBOX_SOCKET"$'\n'
 expect "the run directory is read-only" "$out" "Read-only file system"
 
 # --- network
-out=$(run -- sh -c 'curl -sS -o /dev/null -w "%{http_code}\n" https://example.com; curl -sS -m 10 https://example.org 2>&1; curl -sS -m 5 --noproxy "*" https://example.com 2>&1' || true)
-expect "allowed domain is reachable through the proxy" "$out" "200"
+out=$(run -- sh -c 'curl -sS -o /dev/null -w "https=%{http_code}\n" https://example.com; curl -sS -o /dev/null -w "http=%{http_code}\n" http://example.com; curl -sS -o /dev/null -w "plain-denied=%{http_code}\n" http://example.org; curl -sS -m 10 https://example.org 2>&1; curl -sS -m 5 --noproxy "*" https://example.com 2>&1' || true)
+expect "allowed domain is reachable through the proxy" "$out" "https=200"
+expect "plain HTTP is forwarded" "$out" "http=200"
+expect "plain HTTP to other domains is refused" "$out" "plain-denied=403"
 expect "other domains are refused by the proxy" "$out" "403"
 expect "bypassing the proxy fails" "$out" "Could not resolve host"
 expect "denials are recorded" "$("$BIN" denials)" "example.org:443"
