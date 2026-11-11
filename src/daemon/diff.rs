@@ -31,7 +31,8 @@ fn collect_nix_files(root: &Path, rel: &Path, files: &mut BTreeMap<String, Strin
             continue;
         }
 
-        let is_nix_file = name.ends_with(".nix") || name == "flake.lock";
+        let has_nix_extension = path.extension().is_some_and(|extension| extension == "nix");
+        let is_nix_file = has_nix_extension || name == "flake.lock";
         if !is_nix_file {
             continue;
         }

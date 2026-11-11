@@ -48,6 +48,7 @@ fn start_bridge(port: u16, socket: &str) -> anyhow::Result<()> {
     // Fork twice: the bridge must not be a child of the command we are about to exec.
     // SAFETY: the process is single-threaded here.
     if let ForkResult::Child = unsafe { fork() }? {
+        // SAFETY: still single-threaded, in the intermediate process.
         if let Ok(ForkResult::Child) = unsafe { fork() } {
             run_bridge(listener, socket);
         }
@@ -98,12 +99,12 @@ fn run_bridge(listener: TcpListener, socket: &str) -> ! {
         std::thread::spawn(move || {
             pipe(tcp_reader, &unix, || {
                 let _ = unix.shutdown(Shutdown::Write);
-            })
+            });
         });
         std::thread::spawn(move || {
             pipe(unix_reader, &tcp, || {
                 let _ = tcp.shutdown(Shutdown::Write);
-            })
+            });
         });
     }
 

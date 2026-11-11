@@ -71,7 +71,7 @@ impl AgentTools {
                     }
                 }
 
-                _ = &mut timeout => {
+                () = &mut timeout => {
                     return Outcome::new(
                         "still_pending",
                         "Still waiting for human approval. Call reload_env again without \
@@ -100,7 +100,7 @@ impl AgentTools {
     /// directory. Edit flake.nix (or the files it imports) first, then call this with the
     /// reason for the change. If the result differs from the applied environment a human
     /// must approve it; this call blocks until they decide. Results: unchanged,
-    /// eval_error, applied, restart_scheduled, build_error, rejected, still_pending (call
+    /// `eval_error`, applied, `restart_scheduled`, `build_error`, rejected, `still_pending` (call
     /// again with the same files to keep waiting).
     #[tool]
     async fn reload_env(
@@ -123,7 +123,7 @@ impl AgentTools {
     }
 
     /// List accesses this sandbox run was denied (e.g. network destinations not in
-    /// network.allow). Use it to decide what to request with reload_env.
+    /// network.allow). Use it to decide what to request with `reload_env`.
     #[tool]
     async fn list_denials(&self) -> Result<CallToolResult, ErrorData> {
         Ok(text(pretty(&self.daemon.run_denials(&self.run_id))))

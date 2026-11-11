@@ -28,7 +28,7 @@ struct Args(Vec<String>);
 
 impl Args {
     fn push(&mut self, args: &[&str]) {
-        self.0.extend(args.iter().map(|arg| arg.to_string()));
+        self.0.extend(args.iter().map(ToString::to_string));
     }
 
     /// `--bind`, `--ro-bind` or `--ro-bind-try` of `source` at `target`.

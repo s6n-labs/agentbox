@@ -65,7 +65,7 @@ pub fn write_in_dir(dir: &OwnedFd, name: &str, content: &[u8]) {
     }
 }
 
-/// Receives the three stdio fds the CLI sends with SCM_RIGHTS.
+/// Receives the three stdio fds the CLI sends with `SCM_RIGHTS`.
 pub fn recv_stdio(socket: &UnixStream) -> anyhow::Result<Vec<OwnedFd>> {
     let mut byte = [0u8; 1];
     let mut iov = [IoSliceMut::new(&mut byte)];
@@ -85,6 +85,7 @@ pub fn recv_stdio(socket: &UnixStream) -> anyhow::Result<Vec<OwnedFd>> {
         };
 
         for raw in received {
+            // SAFETY: the kernel just handed us this descriptor; nothing else owns it.
             let fd = unsafe { OwnedFd::from_raw_fd(raw) };
             fcntl(&fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
             fds.push(fd);

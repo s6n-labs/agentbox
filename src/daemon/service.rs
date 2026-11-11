@@ -7,7 +7,13 @@ use std::sync::Arc;
 
 use connectrpc::{ConnectError, RequestContext, Response, Router, ServiceRequest, ServiceResult};
 
-use crate::proto::*;
+use crate::proto::{
+    ClosureDiffRequest, ClosureDiffResponse, CreateRunRequest, CreateRunResponse, DaemonService,
+    DaemonServiceExt, DecideRequest, DecideResponse, ExplainRequest, ExplainResponse,
+    GetPendingRequest, GetPendingResponse, GetPolicyRequest, GetPolicyResponse, ListDenialsRequest,
+    ListDenialsResponse, ReloadRequest, ReloadResponse, SignalRunRequest, SignalRunResponse,
+    WaitRunRequest, WaitRunResponse,
+};
 use crate::rpc::PeerUid;
 
 use super::Daemon;

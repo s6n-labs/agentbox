@@ -131,7 +131,7 @@ impl Fixture {
         let run = Run {
             key: self.key.clone(),
             owner: self.owner.clone(),
-            argv: argv.iter().map(|arg| arg.to_string()).collect(),
+            argv: argv.iter().map(ToString::to_string).collect(),
             term_env: BTreeMap::new(),
             dir_inside: "/run/agentbox".into(),
             profile: dir.join("profile"),

@@ -80,10 +80,12 @@ fn explain_path(effective: &Policy, host: &Config, workdir: &Path, path: &Path) 
     }
 
     if let Some((index, shown)) = containing(&host.fs.writable, path) {
-        return format!("{subject}: read-write by host fs.writable[{index}] = {shown:?}");
+        let shown = shown.display();
+        return format!("{subject}: read-write by host fs.writable[{index}] = {shown}");
     }
     if let Some((index, shown)) = containing(&host.fs.readonly, path) {
-        return format!("{subject}: read-only by host fs.readonly[{index}] = {shown:?}");
+        let shown = shown.display();
+        return format!("{subject}: read-only by host fs.readonly[{index}] = {shown}");
     }
 
     format!(

@@ -6,7 +6,9 @@ use buffa::MessageField;
 use tokio::sync::watch;
 
 use crate::nixcmd::tail;
-use crate::proto::*;
+use crate::proto::{
+    ClosureDiffResponse, DecideRequest, DecideResponse, GetPendingResponse, Target,
+};
 use connectrpc::ConnectError;
 
 use super::diff::make_diff;
@@ -89,7 +91,7 @@ impl Daemon {
         uid: u32,
         target: &Target,
     ) -> Result<GetPendingResponse, ConnectError> {
-        let (key, _) = self.target(uid, target)?;
+        let (key, _) = Self::target(uid, target)?;
         let state = self.lock();
 
         let pending = state.dirs.get(&key).and_then(|dir| {
@@ -119,7 +121,7 @@ impl Daemon {
         uid: u32,
         req: DecideRequest,
     ) -> Result<DecideResponse, ConnectError> {
-        let (key, _) = self.target(uid, &req.target)?;
+        let (key, _) = Self::target(uid, &req.target)?;
 
         if !req.accept {
             let pending = self
@@ -179,7 +181,7 @@ impl Daemon {
         uid: u32,
         target: &Target,
     ) -> Result<ClosureDiffResponse, ConnectError> {
-        let (key, owner) = self.target(uid, target)?;
+        let (key, owner) = Self::target(uid, target)?;
 
         let drvs = self.lock().dirs.get(&key).and_then(|dir| {
             let old = dir.approved.as_ref()?.drv.clone();

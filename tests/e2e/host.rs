@@ -59,7 +59,7 @@ impl Spec {
 
     /// Same policy, different environment derivation.
     pub fn drv(mut self, drv: &str) -> Self {
-        self.drv = drv.to_owned();
+        drv.clone_into(&mut self.drv);
         self
     }
 
@@ -213,7 +213,7 @@ impl Host {
         let mut readonly: Vec<String> = SYSTEM_DIRS
             .iter()
             .filter(|dir| Path::new(dir).exists())
-            .map(|dir| dir.to_string())
+            .map(ToString::to_string)
             .collect();
         readonly.push(fixtures().to_string_lossy().into_owned());
 
@@ -238,7 +238,7 @@ impl Host {
         let daemon = command.spawn().expect("starting the daemon");
 
         let host = Self { root, daemon };
-        host.wait_until("the daemon is listening", || {
+        Self::wait_until("the daemon is listening", || {
             host.socket().exists().then_some(())
         });
         host
@@ -257,7 +257,7 @@ impl Host {
     }
 
     /// Polls `check` until it yields something, failing the test after [`PATIENCE`].
-    fn wait_until<T>(&self, what: &str, check: impl Fn() -> Option<T>) -> T {
+    fn wait_until<T>(what: &str, check: impl Fn() -> Option<T>) -> T {
         let deadline = Instant::now() + PATIENCE;
 
         loop {
@@ -339,7 +339,7 @@ impl Host {
 
     /// Waits for an agent's request to show up and returns it as `review --json` shows it.
     pub fn wait_for_request(&self) -> Value {
-        self.wait_until("an agent's request is pending", || {
+        Self::wait_until("an agent's request is pending", || {
             let pending = self.review()["pending"].take();
             (!pending.is_null()).then_some(pending)
         })

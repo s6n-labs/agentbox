@@ -76,7 +76,9 @@ fn is_valid_sandbox_name(name: &str) -> bool {
 
 impl Daemon {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Persists approval state so it survives a daemon restart.
@@ -109,7 +111,7 @@ impl Daemon {
     }
 
     /// Resolves the workdir a request is about and checks that the peer owns it.
-    fn target(&self, uid: u32, target: &Target) -> Result<(Key, Owner), ConnectError> {
+    fn target(uid: u32, target: &Target) -> Result<(Key, Owner), ConnectError> {
         let workdir = std::fs::canonicalize(&target.workdir)
             .map_err(|e| not_found(format!("{}: {e}", target.workdir)))?;
 
@@ -256,7 +258,7 @@ pub async fn main() -> anyhow::Result<()> {
 
     let mut terminate = signal(SignalKind::terminate())?;
     tokio::select! {
-        _ = serve => {}
+        () = serve => {}
         _ = tokio::signal::ctrl_c() => {}
         _ = terminate.recv() => {}
     }
@@ -289,7 +291,7 @@ mod tests {
         let mut target = fixture.target();
         target.workdir.push_str("/./");
 
-        let (key, owner) = fixture.daemon.target(fixture.uid(), &target).unwrap();
+        let (key, owner) = Daemon::target(fixture.uid(), &target).unwrap();
 
         assert_eq!(key, fixture.key);
         assert_eq!(owner.uid, fixture.uid());
@@ -301,7 +303,7 @@ mod tests {
         let mut target = fixture.target();
         target.sandbox.clear();
 
-        let (key, _) = fixture.daemon.target(fixture.uid(), &target).unwrap();
+        let (key, _) = Daemon::target(fixture.uid(), &target).unwrap();
 
         assert_eq!(key.sandbox, "default");
     }
@@ -309,7 +311,7 @@ mod tests {
     #[test]
     fn targets_are_checked() {
         let fixture = Fixture::new();
-        let code = |target: &Target, uid| fixture.daemon.target(uid, target).unwrap_err().code;
+        let code = |target: &Target, uid| Daemon::target(uid, target).unwrap_err().code;
 
         let mut missing = fixture.target();
         missing.workdir.push_str("/does-not-exist");
@@ -341,7 +343,7 @@ mod tests {
         let mut target = fixture.target();
         target.workdir = file.to_string_lossy().into_owned();
 
-        let error = fixture.daemon.target(fixture.uid(), &target).unwrap_err();
+        let error = Daemon::target(fixture.uid(), &target).unwrap_err();
 
         assert_eq!(error.code, connectrpc::ErrorCode::PermissionDenied);
     }
@@ -349,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn approvals_are_persisted_and_reloaded() {
         let fixture = Fixture::new();
-        fixture.set_eval("env1.drv", super::testing::policy(&[]));
+        fixture.set_eval("env1.drv", testing::policy(&[]));
         fixture.approve_current().await;
 
         let restored = load_state(&fixture.daemon.state_dir);

@@ -6,7 +6,7 @@
 
 use std::io::IsTerminal;
 
-use agentbox::proto::*;
+use agentbox::proto::{ClosureDiffRequest, Diff, GetPendingRequest};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
@@ -18,7 +18,7 @@ use super::client::{Client, decide, format_diff};
 
 const HELP: &str = "a: accept   r: reject   d: closure diff   j/k: scroll   q: quit";
 
-/// Lines scrolled by PageUp / PageDown.
+/// Lines scrolled by `PageUp` / `PageDown`.
 const PAGE: u16 = 20;
 
 /// What the human decided.
@@ -217,6 +217,7 @@ pub fn run(client: &Client, json: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use agentbox::proto::PatchOperation;
     use insta::assert_snapshot;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -388,7 +389,7 @@ mod tests {
         // The first cell of a row carries the style of its line.
         let color_of = |text: &str| {
             let row = review.lines.iter().position(|line| line == text).unwrap();
-            buffer[(0, row as u16)].fg
+            buffer[(0, u16::try_from(row).unwrap())].fg
         };
 
         assert_eq!(

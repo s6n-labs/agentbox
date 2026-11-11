@@ -19,7 +19,10 @@ use tokio::task::JoinHandle;
 use crate::config::{self, is_root};
 use crate::nixcmd::Owner;
 use crate::policy::Policy;
-use crate::proto::*;
+use crate::proto::{
+    CreateRunRequest, CreateRunResponse, Denial, ListDenialsResponse, SignalRunRequest,
+    SignalRunResponse, Target, WaitRunRequest, WaitRunResponse,
+};
 use crate::sandbox::{BRIDGE_PORT, DevEnv};
 use crate::{mcp, proxy};
 use connectrpc::ConnectError;
@@ -168,7 +171,7 @@ impl Daemon {
             return Err(ConnectError::invalid_argument("no command given"));
         }
 
-        let (key, owner) = self.target(uid, &req.target)?;
+        let (key, owner) = Self::target(uid, &req.target)?;
         let eval = self.evaluate(&key, &owner).await.map_err(precondition)?;
 
         if let Some(diff) = self.unapproved_changes(&key, &eval, req.confirm) {
@@ -472,7 +475,7 @@ impl Daemon {
         uid: u32,
         target: &Target,
     ) -> Result<ListDenialsResponse, ConnectError> {
-        let (key, _) = self.target(uid, target)?;
+        let (key, _) = Self::target(uid, target)?;
         let state = self.lock();
 
         let denials = match state.dirs.get(&key) {
@@ -598,7 +601,8 @@ mod tests {
     async fn the_denial_log_is_bounded() {
         let fixture = with_run(&[]).await;
 
-        for port in 0..(MAX_DENIALS as u16 + 10) {
+        let attempts = u16::try_from(MAX_DENIALS).unwrap() + 10;
+        for port in 0..attempts {
             fixture.daemon.check_network("r1", "evil.example", port);
         }
 

@@ -125,8 +125,7 @@ pub fn socket_path() -> PathBuf {
 
     // macOS has no runtime directory; the state directory is just as private.
     dirs::runtime_dir()
-        .map(|dir| dir.join("agentbox"))
-        .unwrap_or_else(user_state_dir)
+        .map_or_else(user_state_dir, |dir| dir.join("agentbox"))
         .join("daemon.sock")
 }
 

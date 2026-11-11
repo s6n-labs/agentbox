@@ -92,16 +92,16 @@ enum Cmd {
 fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     // These run inside the sandbox. They must not start an async runtime: the bootstrap forks.
     match &cli.command {
-        Cmd::Inner { argv } => return inside::bootstrap(argv).map(|_| 0),
-        Cmd::Mcp => return inside::mcp().map(|_| 0),
-        Cmd::Hook { state } => return inside::hook(state).map(|_| 0),
+        Cmd::Inner { argv } => return inside::bootstrap(argv).map(|()| 0),
+        Cmd::Mcp => return inside::mcp().map(|()| 0),
+        Cmd::Hook { state } => return inside::hook(state).map(|()| 0),
         _ => {}
     }
 
     if let Cmd::Daemon = cli.command {
         let runtime = tokio::runtime::Runtime::new()?;
 
-        return runtime.block_on(daemon::main()).map(|_| 0);
+        return runtime.block_on(daemon::main()).map(|()| 0);
     }
 
     // Rust ignores SIGPIPE by default, which turns `agentbox review --json | head` into a

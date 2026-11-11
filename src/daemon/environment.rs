@@ -11,7 +11,10 @@ use serde_json::{Value, json};
 
 use crate::nixcmd::{Eval, Owner};
 use crate::policy::{self, Policy};
-use crate::proto::*;
+use crate::proto::{
+    Diff, ExplainRequest, ExplainResponse, GetPolicyRequest, GetPolicyResponse, ReloadRequest,
+    ReloadResponse,
+};
 use crate::sandbox::{self, Ctx, DevEnv};
 use connectrpc::ConnectError;
 
@@ -232,7 +235,7 @@ impl Daemon {
         uid: u32,
         req: ReloadRequest,
     ) -> Result<ReloadResponse, ConnectError> {
-        let (key, owner) = self.target(uid, &req.target)?;
+        let (key, owner) = Self::target(uid, &req.target)?;
         let eval = self.evaluate(&key, &owner).await.map_err(precondition)?;
 
         if let Some(diff) = self.unapproved_changes(&key, &eval, req.confirm) {
@@ -261,7 +264,7 @@ impl Daemon {
         uid: u32,
         req: GetPolicyRequest,
     ) -> Result<GetPolicyResponse, ConnectError> {
-        let (key, owner) = self.target(uid, &req.target)?;
+        let (key, owner) = Self::target(uid, &req.target)?;
         let eval = self.evaluate(&key, &owner).await.map_err(precondition)?;
 
         if !req.effective {
@@ -285,7 +288,7 @@ impl Daemon {
         uid: u32,
         req: ExplainRequest,
     ) -> Result<ExplainResponse, ConnectError> {
-        let (key, owner) = self.target(uid, &req.target)?;
+        let (key, owner) = Self::target(uid, &req.target)?;
 
         let approved = self.lock().approved(&key).cloned();
         let eval = match approved {

@@ -49,7 +49,7 @@ fn reply(status: StatusCode, message: String) -> Response<Body> {
 }
 
 /// Opens an HTTPS tunnel: after the `200`, bytes flow both ways untouched.
-async fn tunnel(request: Request<Incoming>, mut upstream: TcpStream) -> Response<Body> {
+fn tunnel(request: Request<Incoming>, mut upstream: TcpStream) -> Response<Body> {
     tokio::spawn(async move {
         if let Ok(upgraded) = hyper::upgrade::on(request).await {
             let _ = copy_bidirectional(&mut TokioIo::new(upgraded), &mut upstream).await;
@@ -95,7 +95,7 @@ async fn forward(mut request: Request<Incoming>, upstream: TcpStream) -> Respons
                 response.headers_mut().remove(*header);
             }
 
-            response.map(|body| body.boxed())
+            response.map(BodyExt::boxed)
         }
         Err(error) => reply(StatusCode::BAD_GATEWAY, format!("{error}\n")),
     }
@@ -118,7 +118,7 @@ async fn proxy(request: Request<Incoming>, allowed: impl Fn(&str, u16) -> bool) 
     };
 
     if request.method() == Method::CONNECT {
-        tunnel(request, upstream).await
+        tunnel(request, upstream)
     } else {
         forward(request, upstream).await
     }

@@ -1,6 +1,6 @@
 //! Adapter layer: what differs between agents is absorbed here.
 //!
-//! Environment-based wiring (BASH_ENV, CLAUDE_ENV_FILE, …) applies to every command and
+//! Environment-based wiring (`BASH_ENV`, `CLAUDE_ENV_FILE`, …) applies to every command and
 //! lives in `env.rs`; this file only handles what needs command-line arguments.
 
 use std::path::Path;

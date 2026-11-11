@@ -112,7 +112,7 @@ pub struct State {
     pub dirs: HashMap<Key, Dir>,
     pub runs: HashMap<String, Run>,
 
-    /// Exit codes not collected by WaitRun yet.
+    /// Exit codes not collected by `WaitRun` yet.
     pub exited: HashMap<String, i32>,
 
     pub next_run: u64,
@@ -212,9 +212,11 @@ mod tests {
 
     #[test]
     fn pending_requests_and_runs_do_not_survive() {
-        let (outcome, _decision) = tokio::sync::watch::channel(None);
-        let mut state = State::default();
-        state.next_run = 7;
+        let (outcome, _decision) = watch::channel(None);
+        let mut state = State {
+            next_run: 7,
+            ..Default::default()
+        };
         state.dirs.insert(
             key("/w", "default"),
             Dir {

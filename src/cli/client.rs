@@ -13,7 +13,10 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
 use agentbox::config;
-use agentbox::proto::*;
+use agentbox::proto::{
+    CreateRunRequest, DecideRequest, Diff, ExplainRequest, GetPolicyRequest, ListDenialsRequest,
+    PatchOperation, ReloadRequest, SignalRunRequest, Target, WaitRunRequest,
+};
 use agentbox::rpc::{self, DaemonClient};
 
 /// Terminal-related variables forwarded into the sandbox.

@@ -146,6 +146,8 @@ impl Daemon {
 
         // bwrap receives the pinned directories as inherited fds (--bind-fd).
         let inherited: Vec<i32> = pinned.by_path.values().copied().collect();
+        // SAFETY: the closure only calls fcntl, which is async-signal-safe, on
+        // descriptors that stay open until the child has been spawned.
         unsafe {
             command.pre_exec(move || {
                 for fd in &inherited {
@@ -161,7 +163,7 @@ impl Daemon {
             .spawn()
             .map_err(|e| format!("starting the sandbox: {e}"))?;
 
-        run.pgid = child.id().map(|pid| pid as i32);
+        run.pgid = child.id().and_then(|pid| i32::try_from(pid).ok());
         run.exe_path = exe_path;
         run.busy = false;
 
