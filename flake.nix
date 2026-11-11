@@ -49,10 +49,12 @@
             # build.rs generates the Connect RPC code from proto/ with this protoc.
             PROTOC = "${pkgs.protobuf}/bin/protoc";
 
-            # The daemon starts sandboxes with bubblewrap on Linux.
+            # The daemon starts sandboxes with bubblewrap on Linux. It is only a fallback
+            # (--suffix): distributions that restrict unprivileged user namespaces with
+            # AppArmor (Ubuntu) only let their own /usr/bin/bwrap create them.
             nativeBuildInputs = [ pkgs.makeWrapper ];
             postInstall = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-              wrapProgram $out/bin/agentbox --prefix PATH : ${lib.makeBinPath [ pkgs.bubblewrap ]}
+              wrapProgram $out/bin/agentbox --suffix PATH : ${lib.makeBinPath [ pkgs.bubblewrap ]}
             '';
           };
         }

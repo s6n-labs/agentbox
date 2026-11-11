@@ -18,7 +18,9 @@ ok "the flake package builds"
 
 # --- a repository using the library
 mkdir -p /work && cd /work
+# write_flake <extra packages> <extra domains> [fs.writable entries]
 write_flake() {
+  writable=${3:-'".cache"'}
   cat >flake.nix <<NIX
 {
   inputs.agentbox.url = "path:/src";
@@ -38,7 +40,7 @@ write_flake() {
         version = 1;
         shell = self.devShells.\${pkgs.stdenv.hostPlatform.system}.default;
         network.allow = [ "example.com" $2 ];
-        fs.writable = [ ".cache" ];
+        fs.writable = [ $writable ];
         env.BAR = "\$WORKDIR/x";
       };
     });
@@ -116,7 +118,7 @@ out=$(nix store diff-closures "$old" "$new" 2>&1 || true)
 expect "diff-closures compares derivation closures" "$out" "jq"
 
 # --- invalid policies are evaluation errors
-sed -i 's|fs.writable = \[ ".cache" \]|fs.writable = [ "/etc" ]|' flake.nix
+write_flake "" "" '"/etc"'
 out=$(run --yes -- true)
 expect "absolute paths are rejected by the module" "$out" "fs.writable"
 write_flake "" ""
@@ -129,7 +131,16 @@ mkdir -p /etc/agentbox && echo 'agent_user = "agent"' >/etc/agentbox/config.toml
 chmod -R a+rwX /work
 start_daemon
 out=$(run --yes -- sh -c 'echo "uid=$(id -u)"; touch as-agent && echo wrote')
-expect "the sandbox runs as the agent user" "$out" "uid=4242"
-expect "the agent user can write the workdir" "$out" "wrote"
+case $out in
+  *RTM_NEWADDR*)
+    # The Docker host restricts unprivileged user namespaces (AppArmor), so a bwrap
+    # from the Nix store cannot set up its network namespace as a non-root user here.
+    echo "skip - agent user: unprivileged bwrap is not permitted in this container"
+    ;;
+  *)
+    expect "the sandbox runs as the agent user" "$out" "uid=4242"
+    expect "the agent user can write the workdir" "$out" "wrote"
+    ;;
+esac
 
 echo "all $n checks passed"
