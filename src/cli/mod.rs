@@ -5,6 +5,7 @@ mod client;
 mod review;
 
 use clap::{Parser, Subcommand};
+use nix::sys::signal::{SigHandler, Signal};
 
 use agentbox::{daemon, inside};
 
@@ -102,6 +103,11 @@ fn dispatch(cli: Cli) -> anyhow::Result<i32> {
 
         return runtime.block_on(daemon::main()).map(|_| 0);
     }
+
+    // Rust ignores SIGPIPE by default, which turns `agentbox review --json | head` into a
+    // panic. For these short-lived commands, dying quietly like other CLI tools is right.
+    // SAFETY: restoring the default disposition installs no handler.
+    unsafe { nix::sys::signal::signal(Signal::SIGPIPE, SigHandler::SigDfl)? };
 
     let client = Client::new(cli.sandbox)?;
     match cli.command {
