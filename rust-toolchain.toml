@@ -1,3 +1,5 @@
+# Pinned so that clippy finds the same things locally and in CI.
+# Dependabot proposes updates.
 [toolchain]
-channel = "stable"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]

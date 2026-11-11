@@ -60,3 +60,7 @@ must_use_candidate = "allow"
 # Small helpers taken by value so they can be passed to `map_err` and friends.
 needless_pass_by_value = "allow"
 similar_names = "allow"
+# `assert!(x.is_empty())` reads better than `assert_eq!(x, [] as [T; 0])`.
+assert_is_empty = "allow"
+# The generated service trait and rmcp's macros decide which methods are async.
+unused_async_trait_impl = "allow"
