@@ -1,0 +1,17 @@
+version: 2
+
+updates:
+  # Also regenerates the matching entries of .github/workflows/actions.lock.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
