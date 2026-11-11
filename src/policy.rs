@@ -38,15 +38,20 @@ impl Policy {
     /// Parses and validates the evaluated repo policy. The flake is untrusted and can
     /// bypass the Nix module, so everything is checked again here.
     pub fn parse(v: &Value) -> Result<Self, String> {
-        let p: Policy = serde_json::from_value(v.clone()).map_err(|e| format!("invalid policy: {e}"))?;
+        let p: Policy =
+            serde_json::from_value(v.clone()).map_err(|e| format!("invalid policy: {e}"))?;
         if p.version != 1 {
             return Err(format!("unsupported policy version {}", p.version));
         }
         for w in &p.fs.writable {
             let ok = !w.is_empty()
-                && Path::new(w).components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+                && Path::new(w)
+                    .components()
+                    .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
             if !ok {
-                return Err(format!("fs.writable: {w:?} must be a path relative to the workdir without `..`"));
+                return Err(format!(
+                    "fs.writable: {w:?} must be a path relative to the workdir without `..`"
+                ));
             }
         }
         for c in &p.capabilities {
@@ -68,7 +73,9 @@ impl Policy {
     /// Effective policy = repo layer ∩ host layer, for the given OS.
     pub fn effective(&self, host: &Config, os: &str) -> Policy {
         let mut p = self.clone();
-        p.network.allow.retain(|e| host.network.allow.iter().any(|h| covers(h, e)));
+        p.network
+            .allow
+            .retain(|e| host.network.allow.iter().any(|h| covers(h, e)));
         p.capabilities.retain(|c| {
             host.capabilities.allow.iter().any(|h| h == "*" || h == c)
                 && CAPABILITIES.iter().any(|(name, on)| name == c && *on == os)
@@ -77,7 +84,10 @@ impl Policy {
     }
 
     pub fn net_allowed(&self, host: &str, port: u16) -> bool {
-        self.network.allow.iter().any(|e| entry_matches(e, host, port))
+        self.network
+            .allow
+            .iter()
+            .any(|e| entry_matches(e, host, port))
     }
 }
 
@@ -121,7 +131,11 @@ fn covers(host_pat: &str, entry: &str) -> bool {
 pub fn explain(repo: &Policy, host: &Config, os: &str, workdir: &Path, what: &str) -> String {
     let eff = repo.effective(host, os);
     if what.starts_with('/') || what.starts_with('.') {
-        let path = if Path::new(what).is_absolute() { Path::new(what).to_path_buf() } else { workdir.join(what) };
+        let path = if Path::new(what).is_absolute() {
+            Path::new(what).to_path_buf()
+        } else {
+            workdir.join(what)
+        };
         return explain_path(&eff, host, workdir, &path);
     }
     let (h, port) = split_entry(what);
@@ -129,8 +143,12 @@ pub fn explain(repo: &Policy, host: &Config, os: &str, workdir: &Path, what: &st
     for (i, e) in repo.network.allow.iter().enumerate() {
         if entry_matches(e, h, port) {
             return match host.network.allow.iter().find(|hp| covers(hp, e)) {
-                Some(hp) => format!("{h}:{port}: allowed by repo network.allow[{i}] = {e:?} (within host network.allow {hp:?})"),
-                None => format!("{h}:{port}: denied by host layer: repo network.allow[{i}] = {e:?} is not covered by host network.allow"),
+                Some(hp) => format!(
+                    "{h}:{port}: allowed by repo network.allow[{i}] = {e:?} (within host network.allow {hp:?})"
+                ),
+                None => format!(
+                    "{h}:{port}: denied by host layer: repo network.allow[{i}] = {e:?} is not covered by host network.allow"
+                ),
             };
         }
     }
@@ -151,23 +169,33 @@ fn explain_path(eff: &Policy, host: &Config, workdir: &Path, path: &Path) -> Str
         return if eff.fs.workdir_writable {
             format!("{p}: read-write: workdir (repo fs.workdirWritable = true)")
         } else {
-            format!("{p}: read-only: workdir (repo fs.workdirWritable = false, no fs.writable entry matches)")
+            format!(
+                "{p}: read-only: workdir (repo fs.workdirWritable = false, no fs.writable entry matches)"
+            )
         };
     }
     if path.starts_with("/nix/store") {
-        return format!("{p}: read-only: shared nix store (directory listing of /nix/store itself is denied on macOS)");
+        return format!(
+            "{p}: read-only: shared nix store (directory listing of /nix/store itself is denied on macOS)"
+        );
     }
     if path.starts_with("/nix/var/nix") {
         return format!("{p}: denied: nix database, gcroots and daemon socket are never visible");
     }
     for (i, w) in host.fs.writable.iter().enumerate() {
         if path.starts_with(w) {
-            return format!("{p}: read-write by host fs.writable[{i}] = {:?}", w.display());
+            return format!(
+                "{p}: read-write by host fs.writable[{i}] = {:?}",
+                w.display()
+            );
         }
     }
     for (i, r) in host.fs.readonly.iter().enumerate() {
         if path.starts_with(r) {
-            return format!("{p}: read-only by host fs.readonly[{i}] = {:?}", r.display());
+            return format!(
+                "{p}: read-only by host fs.readonly[{i}] = {:?}",
+                r.display()
+            );
         }
     }
     format!("{p}: denied: not visible by default (only the host layer can expose absolute paths)")
@@ -206,7 +234,11 @@ mod tests {
         let p = policy(&["crates.io", "github.com:443", "a.corp.example"]);
         assert_eq!(p.effective(&host, "macos"), p);
         assert!(p.effective(&host, "linux").capabilities.is_empty());
-        host.network.allow = vec!["*.io".into(), "github.com:443".into(), "github.com:22".into()];
+        host.network.allow = vec![
+            "*.io".into(),
+            "github.com:443".into(),
+            "github.com:22".into(),
+        ];
         host.capabilities.allow = vec![];
         let eff = p.effective(&host, "macos");
         assert_eq!(eff.network.allow, ["crates.io", "github.com:443"]);
@@ -231,7 +263,10 @@ mod tests {
         let p = policy(&["crates.io"]);
         let host = Config::default();
         let w = Path::new("/w");
-        assert!(explain(&p, &host, "linux", w, "crates.io").contains("allowed by repo network.allow[0]"));
+        assert!(
+            explain(&p, &host, "linux", w, "crates.io")
+                .contains("allowed by repo network.allow[0]")
+        );
         assert!(explain(&p, &host, "linux", w, "evil.com").contains("denied"));
         assert!(explain(&p, &host, "linux", w, "./target/debug").contains("fs.writable[0]"));
         assert!(explain(&p, &host, "linux", w, "./src").contains("read-only"));

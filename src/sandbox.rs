@@ -45,16 +45,40 @@ pub struct DevEnv {
 
 /// Variables owned by the sandbox or meaningless outside the Nix build.
 const DROPPED: &[&str] = &[
-    "HOME", "TMP", "TMPDIR", "TEMP", "TEMPDIR", "NIX_BUILD_TOP", "TERM", "USER", "LOGNAME", "PWD", "OLDPWD",
-    "SHLVL", "_", "http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "all_proxy",
-    "NO_PROXY", "no_proxy", "BASH_ENV", "ENV", "ZDOTDIR", "CLAUDE_ENV_FILE",
+    "HOME",
+    "TMP",
+    "TMPDIR",
+    "TEMP",
+    "TEMPDIR",
+    "NIX_BUILD_TOP",
+    "TERM",
+    "USER",
+    "LOGNAME",
+    "PWD",
+    "OLDPWD",
+    "SHLVL",
+    "_",
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "BASH_ENV",
+    "ENV",
+    "ZDOTDIR",
+    "CLAUDE_ENV_FILE",
 ];
 
 impl DevEnv {
     pub fn parse(v: &Value) -> DevEnv {
         let mut dev = DevEnv::default();
         for (k, var) in v["variables"].as_object().into_iter().flatten() {
-            let Some(val) = var["value"].as_str() else { continue };
+            let Some(val) = var["value"].as_str() else {
+                continue;
+            };
             if k == "shellHook" && !val.trim().is_empty() {
                 dev.shell_hook = Some(val.to_owned());
             } else if var["type"] == "exported" && !DROPPED.contains(&k.as_str()) {
@@ -78,7 +102,12 @@ pub fn env_vars(dev: &DevEnv, ctx: &Ctx) -> BTreeMap<String, String> {
     let private = ctx.private_dir();
     let tmp = private.join("tmp").to_string_lossy().into_owned();
     let proxy = format!("http://127.0.0.1:{}", ctx.proxy_port);
-    let bin = ctx.exe_inside.parent().unwrap_or(Path::new("/")).display().to_string();
+    let bin = ctx
+        .exe_inside
+        .parent()
+        .unwrap_or(Path::new("/"))
+        .display()
+        .to_string();
     let path = match vars.get("PATH") {
         Some(p) if !p.is_empty() => format!("{p}:{bin}"),
         _ => bin,
@@ -117,7 +146,10 @@ pub fn env_sh(vars: &BTreeMap<String, String>, shell_hook: Option<&str>) -> Stri
     }
     if let Some(hook) = shell_hook {
         // shellHook runs before every command: it is expected to be cheap and idempotent.
-        out += &format!("if [ -n \"${{BASH_VERSION:-}}\" ]; then eval {} || true; fi\n", sh_quote(hook));
+        out += &format!(
+            "if [ -n \"${{BASH_VERSION:-}}\" ]; then eval {} || true; fi\n",
+            sh_quote(hook)
+        );
     }
     out
 }
@@ -127,12 +159,18 @@ pub fn resolve_in_path(path_var: &str, name: &str) -> Option<PathBuf> {
     if name.contains('/') {
         return Some(PathBuf::from(name));
     }
-    path_var.split(':').filter(|d| !d.is_empty()).map(|d| Path::new(d).join(name)).find(|p| p.is_file())
+    path_var
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(|d| Path::new(d).join(name))
+        .find(|p| p.is_file())
 }
 
 /// Agents we know how to wire up (MCP server, turn hooks, resume).
 pub fn is_agent(argv: &[String]) -> bool {
-    Path::new(&argv[0]).file_name().is_some_and(|n| n == "claude")
+    Path::new(&argv[0])
+        .file_name()
+        .is_some_and(|n| n == "claude")
 }
 
 /// Adapter layer: adds the MCP server and turn hooks, and resumes the session after a restart.
@@ -161,14 +199,32 @@ fn s(p: &Path) -> String {
 
 /// bubblewrap arguments up to and including `--`; the command follows.
 pub fn bwrap_args(ctx: &Ctx, path_var: &str) -> Vec<String> {
-    let covered = |p: &str| ctx.cfg.fs.readonly.iter().chain(&ctx.cfg.fs.writable).any(|h| Path::new(p).starts_with(h));
+    let covered = |p: &str| {
+        ctx.cfg
+            .fs
+            .readonly
+            .iter()
+            .chain(&ctx.cfg.fs.writable)
+            .any(|h| Path::new(p).starts_with(h))
+    };
     let w = s(ctx.workdir);
     let mut a: Vec<String> = [
-        "--die-with-parent", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts",
-        "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+        "--die-with-parent",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
         // ponytail: the whole store is listable on Linux; hiding names needs per-closure
         // binds (strict mode), which would make every env change a restart.
-        "--ro-bind-try", "/nix/store", "/nix/store",
+        "--ro-bind-try",
+        "/nix/store",
+        "/nix/store",
     ]
     .map(String::from)
     .to_vec();
@@ -178,9 +234,18 @@ pub fn bwrap_args(ctx: &Ctx, path_var: &str) -> Vec<String> {
     for p in &ctx.cfg.fs.writable {
         a.extend(["--bind".into(), s(p), s(p)]);
     }
-    let bind = if ctx.policy.fs.workdir_writable { "--bind" } else { "--ro-bind" };
+    let bind = if ctx.policy.fs.workdir_writable {
+        "--bind"
+    } else {
+        "--ro-bind"
+    };
     a.extend([bind.into(), w.clone(), w.clone()]);
-    let writable = ctx.policy.fs.writable.iter().map(|rel| ctx.workdir.join(rel));
+    let writable = ctx
+        .policy
+        .fs
+        .writable
+        .iter()
+        .map(|rel| ctx.workdir.join(rel));
     for p in writable.chain([ctx.private_dir()]) {
         match ctx.pinned.get(&p) {
             Some(fd) => a.extend(["--bind-fd".into(), fd.to_string(), s(&p)]),
@@ -190,11 +255,17 @@ pub fn bwrap_args(ctx: &Ctx, path_var: &str) -> Vec<String> {
     a.extend(["--ro-bind".into(), s(ctx.rundir), s(ctx.rundir_inside)]);
     a.extend(["--ro-bind".into(), s(ctx.exe), s(ctx.exe_inside)]);
     if !covered("/etc") {
-        a.extend(["--ro-bind".into(), s(&ctx.rundir.join("passwd")), "/etc/passwd".into()]);
+        a.extend([
+            "--ro-bind".into(),
+            s(&ctx.rundir.join("passwd")),
+            "/etc/passwd".into(),
+        ]);
     }
     // Scripts expect these two even on NixOS.
     for (name, dir) in [("sh", "/bin"), ("env", "/usr/bin")] {
-        if !covered(dir) && let Some(target) = resolve_in_path(path_var, name) {
+        if !covered(dir)
+            && let Some(target) = resolve_in_path(path_var, name)
+        {
             a.extend(["--symlink".into(), s(&target), format!("{dir}/{name}")]);
         }
     }
@@ -279,10 +350,16 @@ pub fn seatbelt_profile(ctx: &Ctx) -> String {
         p += &format!("(allow file-write* {})\n", sub(&ctx.workdir.join(rel)));
     }
     for host in &ctx.cfg.fs.readonly {
-        p += &format!("(allow file-read* file-map-executable process-exec {})\n", sub(host));
+        p += &format!(
+            "(allow file-read* file-map-executable process-exec {})\n",
+            sub(host)
+        );
     }
     for host in &ctx.cfg.fs.writable {
-        p += &format!("(allow file-read* file-write* file-map-executable process-exec {})\n", sub(host));
+        p += &format!(
+            "(allow file-read* file-write* file-map-executable process-exec {})\n",
+            sub(host)
+        );
     }
     for cap in &ctx.policy.capabilities {
         // Capabilities are names in the repo; their expansion lives only here.

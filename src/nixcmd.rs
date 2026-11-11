@@ -46,7 +46,10 @@ async fn nix(cfg: &Config, owner: &Owner, args: &[&str]) -> Result<String, Strin
         // Evaluate as the requesting user, not as root.
         cmd.uid(owner.uid).gid(owner.gid);
     }
-    let out = cmd.output().await.map_err(|e| format!("running {}: {e}", cfg.nix_bin))?;
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| format!("running {}: {e}", cfg.nix_bin))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -61,9 +64,23 @@ pub fn tail(s: &str, lines: usize) -> String {
 
 /// Copies the current flake source to the store, so that what is reviewed is what gets applied.
 pub async fn pin(cfg: &Config, owner: &Owner, workdir: &Path) -> Result<String, String> {
-    let out = nix(cfg, owner, &["flake", "metadata", "--json", "--no-write-lock-file", &workdir.to_string_lossy()]).await?;
+    let out = nix(
+        cfg,
+        owner,
+        &[
+            "flake",
+            "metadata",
+            "--json",
+            "--no-write-lock-file",
+            &workdir.to_string_lossy(),
+        ],
+    )
+    .await?;
     let v: Value = serde_json::from_str(&out).map_err(|e| format!("nix flake metadata: {e}"))?;
-    v["path"].as_str().map(str::to_owned).ok_or_else(|| "nix flake metadata: no store path".into())
+    v["path"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "nix flake metadata: no store path".into())
 }
 
 fn installable(pinned: &str, system: &str, sandbox: &str) -> String {
@@ -71,7 +88,13 @@ fn installable(pinned: &str, system: &str, sandbox: &str) -> String {
 }
 
 /// Pure evaluation with IFD disabled: nothing is built or run before approval.
-pub async fn eval(cfg: &Config, owner: &Owner, pinned: &str, system: &str, sandbox: &str) -> Result<Eval, String> {
+pub async fn eval(
+    cfg: &Config,
+    owner: &Owner,
+    pinned: &str,
+    system: &str,
+    sandbox: &str,
+) -> Result<Eval, String> {
     let out = nix(
         cfg,
         owner,
@@ -90,12 +113,23 @@ pub async fn eval(cfg: &Config, owner: &Owner, pinned: &str, system: &str, sandb
     .await?;
     let v: Value = serde_json::from_str(&out).map_err(|e| format!("nix eval: {e}"))?;
     let drv = v["drv"].as_str().ok_or("nix eval: no drvPath")?.to_owned();
-    Ok(Eval { pinned: pinned.to_owned(), drv, policy: v["policy"].clone() })
+    Ok(Eval {
+        pinned: pinned.to_owned(),
+        drv,
+        policy: v["policy"].clone(),
+    })
 }
 
 /// Builds the environment and registers `profile` as its GC root.
 /// Returns the JSON of `nix print-dev-env`.
-pub async fn build_env(cfg: &Config, owner: &Owner, ev: &Eval, system: &str, sandbox: &str, profile: &Path) -> Result<Value, String> {
+pub async fn build_env(
+    cfg: &Config,
+    owner: &Owner,
+    ev: &Eval,
+    system: &str,
+    sandbox: &str,
+    profile: &Path,
+) -> Result<Value, String> {
     let out = nix(
         cfg,
         owner,
@@ -113,6 +147,11 @@ pub async fn build_env(cfg: &Config, owner: &Owner, ev: &Eval, system: &str, san
 }
 
 /// Package-level diff of the two derivation closures; works before anything is built.
-pub async fn closure_diff(cfg: &Config, owner: &Owner, old_drv: &str, new_drv: &str) -> Result<String, String> {
+pub async fn closure_diff(
+    cfg: &Config,
+    owner: &Owner,
+    old_drv: &str,
+    new_drv: &str,
+) -> Result<String, String> {
     nix(cfg, owner, &["store", "diff-closures", old_drv, new_drv]).await
 }

@@ -28,7 +28,10 @@ pub struct RpcError {
 
 impl RpcError {
     pub fn new(code: &'static str, message: impl ToString) -> Self {
-        Self { code, message: message.to_string() }
+        Self {
+            code,
+            message: message.to_string(),
+        }
     }
 
     fn http_status(&self) -> u16 {
@@ -48,18 +51,37 @@ where
     F: Future<Output = Result<Vec<u8>, RpcError>> + Send + 'static,
 {
     loop {
-        let Ok((stream, _)) = listener.accept().await else { continue };
-        let Ok(uid) = stream.peer_cred().map(|c| c.uid()) else { continue };
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let Ok(uid) = stream.peer_cred().map(|c| c.uid()) else {
+            continue;
+        };
         let handler = handler.clone();
         tokio::spawn(async move {
             let svc = service_fn(move |req: Request<Incoming>| {
                 let handler = handler.clone();
                 async move {
-                    let method = req.uri().path().strip_prefix(PREFIX).unwrap_or("").to_string();
-                    let body = req.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
+                    let method = req
+                        .uri()
+                        .path()
+                        .strip_prefix(PREFIX)
+                        .unwrap_or("")
+                        .to_string();
+                    let body = req
+                        .into_body()
+                        .collect()
+                        .await
+                        .map(|b| b.to_bytes())
+                        .unwrap_or_default();
                     let (status, bytes) = match handler(uid, method, body).await {
                         Ok(b) => (200, b),
-                        Err(e) => (e.http_status(), json!({"code": e.code, "message": e.message}).to_string().into_bytes()),
+                        Err(e) => (
+                            e.http_status(),
+                            json!({"code": e.code, "message": e.message})
+                                .to_string()
+                                .into_bytes(),
+                        ),
                     };
                     Ok::<_, Infallible>(
                         Response::builder()
@@ -70,15 +92,24 @@ where
                     )
                 }
             });
-            let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), svc).await;
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(stream), svc)
+                .await;
         });
     }
 }
 
-pub async fn call<Q: Serialize, R: DeserializeOwned>(socket: &Path, method: &str, req: &Q) -> anyhow::Result<R> {
-    let stream = UnixStream::connect(socket)
-        .await
-        .with_context(|| format!("connecting to the agentbox daemon at {} (is `agentbox daemon` running?)", socket.display()))?;
+pub async fn call<Q: Serialize, R: DeserializeOwned>(
+    socket: &Path,
+    method: &str,
+    req: &Q,
+) -> anyhow::Result<R> {
+    let stream = UnixStream::connect(socket).await.with_context(|| {
+        format!(
+            "connecting to the agentbox daemon at {} (is `agentbox daemon` running?)",
+            socket.display()
+        )
+    })?;
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
     tokio::spawn(conn);
     let req = Request::post(format!("{PREFIX}{method}"))
@@ -90,7 +121,10 @@ pub async fn call<Q: Serialize, R: DeserializeOwned>(socket: &Path, method: &str
     let body = res.into_body().collect().await?.to_bytes();
     if !ok {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-        bail!("{}", v["message"].as_str().unwrap_or("daemon returned an error"));
+        bail!(
+            "{}",
+            v["message"].as_str().unwrap_or("daemon returned an error")
+        );
     }
     Ok(serde_json::from_slice(&body)?)
 }

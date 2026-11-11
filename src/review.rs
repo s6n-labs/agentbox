@@ -8,8 +8,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
+use crate::client::{Client, format_diff};
 use crate::proto::*;
-use crate::{Client, format_diff};
 
 fn styled(line: &str) -> Line<'_> {
     let style = match line.as_bytes().first() {
@@ -51,11 +51,21 @@ pub fn run(client: &Client, json: bool) -> anyhow::Result<()> {
             None => "a: accept   r: reject   d: closure diff   j/k: scroll   q: quit".into(),
         };
         terminal.draw(|f| {
-            let [body, bar] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
-            f.render_widget(Paragraph::new(lines.iter().map(|l| styled(l)).collect::<Vec<_>>()).scroll((scroll, 0)), body);
-            f.render_widget(Paragraph::new(footer).style(Style::new().add_modifier(Modifier::REVERSED)), bar);
+            let [body, bar] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(f.area());
+            f.render_widget(
+                Paragraph::new(lines.iter().map(|l| styled(l)).collect::<Vec<_>>())
+                    .scroll((scroll, 0)),
+                body,
+            );
+            f.render_widget(
+                Paragraph::new(footer).style(Style::new().add_modifier(Modifier::REVERSED)),
+                bar,
+            );
         })?;
-        let Event::Key(key) = event::read()? else { continue };
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -75,7 +85,9 @@ pub fn run(client: &Client, json: bool) -> anyhow::Result<()> {
             KeyCode::Char('q') | KeyCode::Esc => break None,
             KeyCode::Char('d') => {
                 let text = match client.call::<_, TextRes>("ClosureDiff", &target) {
-                    Ok(res) if res.text.trim().is_empty() => "(no package-level differences)".into(),
+                    Ok(res) if res.text.trim().is_empty() => {
+                        "(no package-level differences)".into()
+                    }
                     Ok(res) => res.text,
                     Err(e) => format!("{e:#}"),
                 };
@@ -94,7 +106,14 @@ pub fn run(client: &Client, json: bool) -> anyhow::Result<()> {
         if accept {
             println!("building and applying…");
         }
-        let res: TextRes = client.call("Decide", &DecideReq { target, accept, reason })?;
+        let res: TextRes = client.call(
+            "Decide",
+            &DecideReq {
+                target,
+                accept,
+                reason,
+            },
+        )?;
         println!("{}", res.text);
     }
     Ok(())

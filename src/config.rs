@@ -44,7 +44,9 @@ pub struct Seatbelt {
 
 impl Default for AllowList {
     fn default() -> Self {
-        Self { allow: vec!["*".into()] }
+        Self {
+            allow: vec!["*".into()],
+        }
     }
 }
 
@@ -78,7 +80,9 @@ pub fn is_root() -> bool {
 }
 
 fn env_path(var: &str) -> Option<PathBuf> {
-    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 fn home() -> PathBuf {
@@ -90,7 +94,9 @@ pub fn config_path() -> PathBuf {
         if is_root() {
             "/etc/agentbox/config.toml".into()
         } else {
-            env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")).join("agentbox/config.toml")
+            env_path("XDG_CONFIG_HOME")
+                .unwrap_or_else(|| home().join(".config"))
+                .join("agentbox/config.toml")
         }
     })
 }
@@ -116,7 +122,9 @@ pub fn state_dir() -> PathBuf {
         if is_root() {
             "/var/lib/agentbox".into()
         } else {
-            env_path("XDG_STATE_HOME").unwrap_or_else(|| home().join(".local/state")).join("agentbox")
+            env_path("XDG_STATE_HOME")
+                .unwrap_or_else(|| home().join(".local/state"))
+                .join("agentbox")
         }
     })
 }

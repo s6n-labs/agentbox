@@ -18,7 +18,8 @@ pub fn inner(argv: &[String]) -> anyhow::Result<()> {
     if let Ok(spec) = std::env::var("AGENTBOX_BRIDGE") {
         unsafe { std::env::remove_var("AGENTBOX_BRIDGE") };
         let (port, sock) = spec.split_once(':').context("AGENTBOX_BRIDGE")?;
-        let listener = TcpListener::bind(("127.0.0.1", port.parse::<u16>()?)).context("binding the proxy bridge")?;
+        let listener = TcpListener::bind(("127.0.0.1", port.parse::<u16>()?))
+            .context("binding the proxy bridge")?;
         // Double fork so the bridge is not a child of the command we are about to exec.
         if let ForkResult::Child = unsafe { fork() }? {
             if let Ok(ForkResult::Child) = unsafe { fork() } {
@@ -35,17 +36,31 @@ pub fn inner(argv: &[String]) -> anyhow::Result<()> {
 fn bridge(listener: TcpListener, sock: String) -> ! {
     // Lives until the sandbox's PID namespace goes away; detached from the terminal.
     let _ = setsid();
-    for sig in [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP, Signal::SIGQUIT, Signal::SIGPIPE] {
+    for sig in [
+        Signal::SIGINT,
+        Signal::SIGTERM,
+        Signal::SIGHUP,
+        Signal::SIGQUIT,
+        Signal::SIGPIPE,
+    ] {
         let _ = unsafe { signal(sig, SigHandler::SigIgn) };
     }
-    if let Ok(null) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/null") {
+    if let Ok(null) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+    {
         for fd in 0..3 {
             unsafe { libc::dup2(std::os::fd::AsRawFd::as_raw_fd(&null), fd) };
         }
     }
     for tcp in listener.incoming().flatten() {
-        let Ok(unix) = UnixStream::connect(&sock) else { continue };
-        let (Ok(mut tcp2), Ok(mut unix2)) = (tcp.try_clone(), unix.try_clone()) else { continue };
+        let Ok(unix) = UnixStream::connect(&sock) else {
+            continue;
+        };
+        let (Ok(mut tcp2), Ok(mut unix2)) = (tcp.try_clone(), unix.try_clone()) else {
+            continue;
+        };
         let (mut tcp, mut unix) = (tcp, unix);
         std::thread::spawn(move || {
             let _ = io::copy(&mut tcp2, &mut unix2);
@@ -60,7 +75,8 @@ fn bridge(listener: TcpListener, sock: String) -> ! {
 }
 
 fn agent_socket() -> anyhow::Result<UnixStream> {
-    let path = std::env::var("AGENTBOX_SOCK").context("AGENTBOX_SOCK is not set: this command only works inside an agentbox sandbox")?;
+    let path = std::env::var("AGENTBOX_SOCK")
+        .context("AGENTBOX_SOCK is not set: this command only works inside an agentbox sandbox")?;
     UnixStream::connect(&path).with_context(|| format!("connecting to {path}"))
 }
 
@@ -90,6 +106,9 @@ pub fn hook(state: &str) -> anyhow::Result<()> {
         bail!("state must be busy or idle");
     }
     let mut sock = agent_socket()?;
-    writeln!(sock, r#"{{"jsonrpc":"2.0","method":"agentbox/hook","params":{{"state":"{state}"}}}}"#)?;
+    writeln!(
+        sock,
+        r#"{{"jsonrpc":"2.0","method":"agentbox/hook","params":{{"state":"{state}"}}}}"#
+    )?;
     Ok(())
 }

@@ -41,25 +41,37 @@ where
         }
         buf.extend_from_slice(&chunk[..n]);
     };
-    let Some((host, port, connect)) = parse_target(&String::from_utf8_lossy(&buf[..head_end])) else {
-        return client.write_all(b"HTTP/1.1 400 Bad Request\r\nconnection: close\r\n\r\n").await;
+    let Some((host, port, connect)) = parse_target(&String::from_utf8_lossy(&buf[..head_end]))
+    else {
+        return client
+            .write_all(b"HTTP/1.1 400 Bad Request\r\nconnection: close\r\n\r\n")
+            .await;
     };
     if !allowed(&host, port) {
         let body = format!("agentbox: {host}:{port} is not in network.allow\n");
-        let res = format!("HTTP/1.1 403 Forbidden\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+        let res = format!(
+            "HTTP/1.1 403 Forbidden\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
         return client.write_all(res.as_bytes()).await;
     }
     let Ok(mut upstream) = TcpStream::connect((host.as_str(), port)).await else {
-        return client.write_all(b"HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\n").await;
+        return client
+            .write_all(b"HTTP/1.1 502 Bad Gateway\r\nconnection: close\r\n\r\n")
+            .await;
     };
     if connect {
-        client.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await?;
+        client
+            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            .await?;
         upstream.write_all(&buf[head_end..]).await?;
     } else {
         // Plain HTTP: the connection stays pinned to this upstream.
         upstream.write_all(&buf).await?;
     }
-    copy_bidirectional(&mut client, &mut upstream).await.map(|_| ())
+    copy_bidirectional(&mut client, &mut upstream)
+        .await
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -68,10 +80,22 @@ mod tests {
 
     #[test]
     fn targets() {
-        assert_eq!(parse_target("CONNECT github.com:443 HTTP/1.1\r\n"), Some(("github.com".into(), 443, true)));
-        assert_eq!(parse_target("GET http://example.com/a?b HTTP/1.1\r\n"), Some(("example.com".into(), 80, false)));
-        assert_eq!(parse_target("GET http://u:p@example.com:8080/ HTTP/1.1\r\n"), Some(("example.com".into(), 8080, false)));
-        assert_eq!(parse_target("CONNECT [::1]:443 HTTP/1.1\r\n"), Some(("::1".into(), 443, true)));
+        assert_eq!(
+            parse_target("CONNECT github.com:443 HTTP/1.1\r\n"),
+            Some(("github.com".into(), 443, true))
+        );
+        assert_eq!(
+            parse_target("GET http://example.com/a?b HTTP/1.1\r\n"),
+            Some(("example.com".into(), 80, false))
+        );
+        assert_eq!(
+            parse_target("GET http://u:p@example.com:8080/ HTTP/1.1\r\n"),
+            Some(("example.com".into(), 8080, false))
+        );
+        assert_eq!(
+            parse_target("CONNECT [::1]:443 HTTP/1.1\r\n"),
+            Some(("::1".into(), 443, true))
+        );
         assert_eq!(parse_target("GET /relative HTTP/1.1\r\n"), None);
     }
 }
