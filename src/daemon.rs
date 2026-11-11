@@ -456,7 +456,10 @@ impl Daemon {
         let (d, rid) = (self.clone(), id.clone());
         tasks.push(tokio::spawn(async move {
             if let Err(e) = d.attach(&rid, ctl, uid).await {
-                eprintln!("agentbox: run {rid}: {e:#}");
+                // Tell the human at the terminal, if we got one.
+                if let Some(fds) = d.lock().runs.get(&rid).and_then(|r| r.fds.as_ref()) {
+                    let _ = nix::unistd::write(&fds[2], format!("agentbox: {e:#}\n").as_bytes());
+                }
                 d.finish(&rid, 127);
             }
         }));

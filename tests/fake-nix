@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""Stand-in for `nix` in tests/e2e.sh. The "flake" is a sandbox.json in the workdir:
+{"drv": ..., "policy": {...}, "env": {...}, "error"?: ..., "buildError"?: ...}"""
+import hashlib, json, os, pathlib, re, shutil, sys
+
+args = sys.argv[1:]
+store = pathlib.Path(os.environ["FAKE_STORE"])
+
+
+def pinned():
+    return pathlib.Path(next(m.group(1) for a in args if (m := re.match(r"path:([^#]+)#", a))))
+
+
+def spec():
+    return json.loads((pinned() / "sandbox.json").read_text())
+
+
+if "metadata" in args:
+    src = pathlib.Path(args[-1])
+    files = sorted(p for p in src.iterdir() if p.name in ("sandbox.json", "flake.lock") or p.suffix == ".nix")
+    digest = hashlib.sha256(b"".join(p.name.encode() + p.read_bytes() for p in files)).hexdigest()[:16]
+    dest = store / digest
+    dest.mkdir(parents=True, exist_ok=True)
+    for p in files:
+        shutil.copy(p, dest / p.name)
+    print(json.dumps({"path": str(dest)}))
+elif "eval" in args:
+    s = spec()
+    if "error" in s:
+        sys.exit(f"error: {s['error']}")
+    print(json.dumps({"policy": s["policy"], "drv": s["drv"]}))
+elif "print-dev-env" in args:
+    s = spec()
+    if "buildError" in s:
+        sys.exit(f"error: builder failed: {s['buildError']}")
+    pathlib.Path(args[args.index("--profile") + 1]).write_text(s["drv"])
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/homeless-shelter", **s.get("env", {})}
+    print(json.dumps({"variables": {k: {"type": "exported", "value": v} for k, v in env.items()}}))
+elif "diff-closures" in args:
+    print(f"{args[-2]} -> {args[-1]}")
+else:
+    sys.exit(f"fake-nix: unsupported: {args}")
