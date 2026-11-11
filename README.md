@@ -53,7 +53,7 @@ cargo build --release
 
 ```nix
 {
-  inputs.agentbox.url = "<this repository>";
+  inputs.agentbox.url = "github:siketyan/agentbox";
   inputs.nixpkgs.follows = "agentbox/nixpkgs";
 
   outputs = { self, nixpkgs, agentbox }: {
