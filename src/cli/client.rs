@@ -12,9 +12,9 @@ use serde_json::Value;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
-use crate::config;
-use crate::proto::*;
-use crate::rpc::{self, DaemonClient};
+use agentbox::config;
+use agentbox::proto::*;
+use agentbox::rpc::{self, DaemonClient};
 
 /// Terminal-related variables forwarded into the sandbox.
 const FORWARDED_VARS: &[&str] = &["TERM", "COLORTERM", "LANG", "LC_ALL"];

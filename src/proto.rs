@@ -1,5 +1,7 @@
 //! Messages and service stubs generated from `proto/agentbox/v1/daemon.proto`.
 
-connectrpc::include_generated!();
+mod generated {
+    connectrpc::include_generated!();
+}
 
-pub use agentbox::v1::*;
+pub use generated::agentbox::v1::*;

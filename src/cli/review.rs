@@ -9,8 +9,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
-use crate::client::{Client, format_diff};
-use crate::proto::*;
+use super::client::{Client, decide, format_diff};
+use agentbox::proto::*;
 
 const HELP: &str = "a: accept   r: reject   d: closure diff   j/k: scroll   q: quit";
 
@@ -176,10 +176,10 @@ pub fn run(client: &Client, json: bool) -> anyhow::Result<()> {
 
     match decision? {
         Decision::Quit => Ok(()),
-        Decision::Reject { reason } => crate::client::decide(client, false, reason),
+        Decision::Reject { reason } => decide(client, false, reason),
         Decision::Accept => {
             println!("building and applying…");
-            crate::client::decide(client, true, String::new())
+            decide(client, true, String::new())
         }
     }
 }

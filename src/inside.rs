@@ -12,7 +12,7 @@ use nix::sys::signal::{SigHandler, Signal, signal};
 use nix::unistd::{ForkResult, fork, setsid};
 
 /// `agentbox inner -- cmd...`: starts the proxy bridge if requested, then becomes the command.
-pub fn inner(argv: &[String]) -> anyhow::Result<()> {
+pub fn bootstrap(argv: &[String]) -> anyhow::Result<()> {
     // Linux only: the sandbox has its own network namespace, so the proxy is reached
     // through a Unix socket. Expose it as a local TCP port for HTTP(S)_PROXY.
     if let Ok(spec) = std::env::var("AGENTBOX_BRIDGE") {
