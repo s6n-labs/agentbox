@@ -1,0 +1,4 @@
+#!/bin/sh
+# Fake `nix` that records its arguments in $HOME/args and prints an evaluation result.
+echo "$*" > "$HOME/args"
+echo '{"drv":"/nix/store/x.drv","policy":{}}'

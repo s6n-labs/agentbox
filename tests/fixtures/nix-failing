@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fake `nix` that always fails, with noise before the actual error.
+echo noise >&2
+echo 'error: boom' >&2
+exit 1

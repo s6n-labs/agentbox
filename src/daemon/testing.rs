@@ -1,10 +1,10 @@
 //! A daemon wired to a fake `nix`, for testing the approval flow without Nix or sandboxes.
 //!
-//! The fake treats the workdir itself as the pinned source and reads the "evaluation"
-//! from `eval.json` in it. `eval-error` and `build-error` files make it fail.
+//! The fake (`tests/fixtures/nix-from-workdir`) treats the workdir itself as the pinned
+//! source and reads the "evaluation" from `eval.json` in it. `eval-error` and
+//! `build-error` files make it fail.
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -20,23 +20,12 @@ use crate::sandbox::DevEnv;
 use super::Daemon;
 use super::state::{Key, Run, State};
 
-const FAKE_NIX: &str = r#"#!/bin/sh
-for arg; do
-  case $arg in path:*) dir=${arg#path:}; dir=${dir%%#*} ;; esac
-  last=$arg
-done
-
-fail_if() { [ ! -e "$1" ] || { cat "$1" >&2; exit 1; }; }
-
-case " $* " in
-  *" metadata "*) printf '{"path":"%s"}' "$last" ;;
-  *" eval "*) fail_if "$dir/eval-error"; cat "$dir/eval.json" ;;
-  *" print-dev-env "*)
-    fail_if "$dir/build-error"
-    echo '{"variables":{"PATH":{"type":"exported","value":"/bin"}}}'
-    ;;
-esac
-"#;
+/// Checked in rather than written by each test: executing a file another thread has
+/// just written races with that thread's forks ("Text file busy").
+const FAKE_NIX: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/nix-from-workdir"
+);
 
 /// A daemon, the workdir it serves, and the directories keeping both alive.
 pub struct Fixture {
@@ -62,17 +51,13 @@ impl Fixture {
         let dirs = tempfile::tempdir().unwrap();
         let root = dirs.path().canonicalize().unwrap();
 
-        let nix = root.join("nix");
-        std::fs::write(&nix, FAKE_NIX).unwrap();
-        std::fs::set_permissions(&nix, PermissionsExt::from_mode(0o755)).unwrap();
-
         let workdir = root.join("work");
         let state_dir = root.join("state");
         std::fs::create_dir_all(&workdir).unwrap();
         std::fs::create_dir_all(state_dir.join("runs")).unwrap();
 
         let cfg = Config {
-            nix_bin: nix.to_string_lossy().into_owned(),
+            nix_bin: FAKE_NIX.into(),
             approval_timeout_secs: 1,
             ..Config::default()
         };

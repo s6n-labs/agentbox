@@ -236,62 +236,43 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_failing_command_reports_the_end_of_stderr() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("nix");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\necho noise >&2\necho 'error: boom' >&2\nexit 1\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
-
-        let cfg = Config {
-            nix_bin: fake.to_string_lossy().into_owned(),
+    fn fixture(name: &str) -> Config {
+        Config {
+            nix_bin: format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR")),
             ..Config::default()
-        };
-        let owner = Owner {
+        }
+    }
+
+    fn owner(home: &Path) -> Owner {
+        Owner {
             uid: nix::unistd::getuid().as_raw(),
             gid: nix::unistd::getgid().as_raw(),
             name: "me".into(),
-            home: dir.path().to_owned(),
-        };
+            home: home.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_command_reports_the_end_of_stderr() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = fixture("nix-failing");
+        let owner = owner(home.path());
         let nix = Nix {
             cfg: &cfg,
             owner: &owner,
             system: "x86_64-linux",
         };
 
-        let error = nix.pin(dir.path()).await.unwrap_err();
+        let error = nix.pin(home.path()).await.unwrap_err();
 
         assert_eq!(error, "noise\nerror: boom");
     }
 
     #[tokio::test]
     async fn flags_that_keep_evaluation_safe_are_always_passed() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("nix");
-        // Records its arguments and prints what `nix eval` would.
-        let script = format!(
-            "#!/bin/sh\necho \"$*\" > {}/args\necho '{{\"drv\":\"/nix/store/x.drv\",\"policy\":{{}}}}'\n",
-            dir.path().display()
-        );
-        std::fs::write(&fake, script).unwrap();
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
-
-        let cfg = Config {
-            nix_bin: fake.to_string_lossy().into_owned(),
-            ..Config::default()
-        };
-        let owner = Owner {
-            uid: nix::unistd::getuid().as_raw(),
-            gid: nix::unistd::getgid().as_raw(),
-            name: "me".into(),
-            home: dir.path().to_owned(),
-        };
+        let home = tempfile::tempdir().unwrap();
+        let cfg = fixture("nix-recording-args");
+        let owner = owner(home.path());
         let nix = Nix {
             cfg: &cfg,
             owner: &owner,
@@ -299,7 +280,7 @@ mod tests {
         };
 
         let eval = nix.eval("/nix/store/aaa-source", "default").await.unwrap();
-        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        let args = std::fs::read_to_string(home.path().join("args")).unwrap();
 
         assert_eq!(eval.drv, "/nix/store/x.drv");
         assert_eq!(eval.pinned, "/nix/store/aaa-source");

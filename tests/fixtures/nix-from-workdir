@@ -1,0 +1,18 @@
+#!/bin/sh
+# Fake `nix` for the daemon's unit tests. The workdir itself is the pinned source; the
+# "evaluation" is read from eval.json in it. eval-error / build-error files make it fail.
+for arg; do
+  case $arg in path:*) dir=${arg#path:}; dir=${dir%%#*} ;; esac
+  last=$arg
+done
+
+fail_if() { [ ! -e "$1" ] || { cat "$1" >&2; exit 1; }; }
+
+case " $* " in
+  *" metadata "*) printf '{"path":"%s"}' "$last" ;;
+  *" eval "*) fail_if "$dir/eval-error"; cat "$dir/eval.json" ;;
+  *" print-dev-env "*)
+    fail_if "$dir/build-error"
+    echo '{"variables":{"PATH":{"type":"exported","value":"/bin"}}}'
+    ;;
+esac
