@@ -42,6 +42,8 @@
                 ./build.rs
                 ./proto
                 ./src
+                # Unit tests use the fake nix scripts in tests/fixtures.
+                ./tests
               ];
             };
             cargoLock.lockFile = ./Cargo.lock;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stand-in for `nix` in tests/e2e.sh. The "flake" is a sandbox.json in the workdir:
+"""Stand-in for `nix` in the end-to-end tests (tests/e2e). The "flake" is a sandbox.json in the workdir:
 {"drv": ..., "policy": {...}, "env": {...}, "error"?: ..., "buildError"?: ...}"""
 import hashlib, json, os, pathlib, re, shutil, sys
 

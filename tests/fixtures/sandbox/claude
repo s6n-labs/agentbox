@@ -1,0 +1,21 @@
+#!/bin/bash
+# Stand-in for an agent. Only its name matters to the adapter, which then adds the MCP
+# server, the turn hooks and, after a restart, `--continue <message>`.
+here=$(dirname "$0")
+
+if [[ " $* " == *" --continue "* ]]; then
+  echo "RESUMED: ${*: -1}"
+  ls -d out
+  exit 0
+fi
+
+# One turn: switch to the staged environment and ask for it.
+agentbox hook busy
+cp next.json sandbox.json
+cp next.nix flake.nix
+echo "RESULT=$("$here/mcp-call.sh" reload_env '{"reason":"need out/"}')"
+agentbox hook idle
+
+# The daemon restarts us now that the turn is over; we must not get this far.
+sleep 30
+echo "NOT RESTARTED"
