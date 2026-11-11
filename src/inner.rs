@@ -74,29 +74,34 @@ fn bridge(listener: TcpListener, sock: String) -> ! {
     std::process::exit(0)
 }
 
-fn agent_socket() -> anyhow::Result<UnixStream> {
-    let path = std::env::var("AGENTBOX_SOCK")
-        .context("AGENTBOX_SOCK is not set: this command only works inside an agentbox sandbox")?;
+/// Connects to one of the run's sockets, named by an environment variable.
+fn connect(var: &str) -> anyhow::Result<UnixStream> {
+    let path = std::env::var(var)
+        .with_context(|| format!("{var} is not set: this only works inside an agentbox sandbox"))?;
+
     UnixStream::connect(&path).with_context(|| format!("connecting to {path}"))
 }
 
 /// `agentbox mcp`: stdio MCP server. The daemon implements it; this just pipes bytes.
 pub fn mcp() -> anyhow::Result<()> {
-    let mut sock = agent_socket()?;
-    let mut up = sock.try_clone()?;
+    let mut socket = connect("AGENTBOX_SOCK")?;
+    let mut upstream = socket.try_clone()?;
+
     std::thread::spawn(move || {
-        let _ = io::copy(&mut io::stdin().lock(), &mut up);
-        let _ = up.shutdown(Shutdown::Write);
+        let _ = io::copy(&mut io::stdin().lock(), &mut upstream);
+        let _ = upstream.shutdown(Shutdown::Write);
     });
-    let mut out = io::stdout().lock();
+
+    let mut stdout = io::stdout().lock();
     let mut buf = [0u8; 8192];
     loop {
-        let n = sock.read(&mut buf)?;
+        let n = socket.read(&mut buf)?;
         if n == 0 {
             return Ok(());
         }
-        out.write_all(&buf[..n])?;
-        out.flush()?;
+
+        stdout.write_all(&buf[..n])?;
+        stdout.flush()?;
     }
 }
 
@@ -105,10 +110,9 @@ pub fn hook(state: &str) -> anyhow::Result<()> {
     if !matches!(state, "busy" | "idle") {
         bail!("state must be busy or idle");
     }
-    let mut sock = agent_socket()?;
-    writeln!(
-        sock,
-        r#"{{"jsonrpc":"2.0","method":"agentbox/hook","params":{{"state":"{state}"}}}}"#
-    )?;
+
+    let mut socket = connect("AGENTBOX_HOOK_SOCK")?;
+    writeln!(socket, "{state}")?;
+
     Ok(())
 }

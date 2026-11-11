@@ -202,11 +202,13 @@ impl Daemon {
         let agent_changed = run.exe_path != sandbox::resolve_in_path(&vars["PATH"], &run.argv[0]);
         if policy_restart || agent_changed {
             schedule_restart(run);
-            Ok(Applied::Restart)
-        } else {
-            notify_hot_reload(run);
-            Ok(Applied::Hot)
+            return Ok(Applied::Restart);
         }
+
+        // ponytail: an agent that did not ask for this reload is not told to restart its
+        // long-running processes. MCP has no server-to-client message for that anymore
+        // (logging is deprecated by SEP-2577); the requester reads it in the tool result.
+        Ok(Applied::Hot)
     }
 
     /// Remembers `eval` as approved and settles a pending request it satisfies
@@ -320,21 +322,4 @@ fn schedule_restart(run: &mut Run) {
     } else {
         trigger_restart(run, RESTART_NOTE.into());
     }
-}
-
-/// Long-running processes keep the old environment, so ask the agent to restart them.
-fn notify_hot_reload(run: &mut Run) {
-    let note = json!({
-        "jsonrpc": "2.0",
-        "method": "notifications/message",
-        "params": {
-            "level": "notice",
-            "logger": "agentbox",
-            "data": Applied::Hot.message(),
-        },
-    })
-    .to_string();
-
-    run.mcp_sessions
-        .retain(|session| session.send(note.clone()).is_ok());
 }

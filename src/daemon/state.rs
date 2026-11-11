@@ -5,7 +5,7 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::nixcmd::{Eval, Owner};
@@ -97,9 +97,6 @@ pub struct Run {
     pub restart_when_idle: Option<String>,
 
     pub exit: watch::Sender<Option<i32>>,
-
-    /// MCP sessions of this run, for daemon-initiated notifications.
-    pub mcp_sessions: Vec<mpsc::UnboundedSender<String>>,
 
     pub tasks: Vec<JoinHandle<()>>,
 }

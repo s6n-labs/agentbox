@@ -11,8 +11,9 @@ use buffa::MessageField;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::{TcpListener, UnixListener, UnixStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::config::{self, is_root};
@@ -52,7 +53,10 @@ enum ProxyListener {
 }
 
 struct RunSockets {
+    /// MCP sessions of the agent.
     agent: UnixListener,
+    /// Turn hooks of the agent (`agentbox hook busy|idle`).
+    hook: UnixListener,
     ctl: UnixListener,
     proxy: ProxyListener,
 }
@@ -119,6 +123,7 @@ impl Daemon {
         )?;
 
         let agent = UnixListener::bind(paths.dir.join("agent.sock"))?;
+        let hook = UnixListener::bind(paths.dir.join("hook.sock"))?;
         let ctl = UnixListener::bind(&paths.ctl)?;
         let proxy = if cfg!(target_os = "macos") {
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -132,13 +137,13 @@ impl Daemon {
             // The sandbox user may read the run directory and connect to its sockets,
             // but never write there.
             set_mode(&paths.dir, 0o750)?;
-            for name in ["", "zdotdir", "agent.sock", "proxy.sock"] {
+            for name in ["", "zdotdir", "agent.sock", "hook.sock", "proxy.sock"] {
                 let path = paths.dir.join(name);
                 if path.exists() {
                     chown(&path, Some(0), Some(gid))?;
                 }
             }
-            for socket in ["agent.sock", "proxy.sock"] {
+            for socket in ["agent.sock", "hook.sock", "proxy.sock"] {
                 let _ = set_mode(&paths.dir.join(socket), 0o660);
             }
 
@@ -146,7 +151,12 @@ impl Daemon {
             chown(&paths.gcroot, Some(owner.uid), Some(owner.gid))?;
         }
 
-        Ok(RunSockets { agent, ctl, proxy })
+        Ok(RunSockets {
+            agent,
+            hook,
+            ctl,
+            proxy,
+        })
     }
 
     pub(super) async fn create_run(
@@ -203,7 +213,6 @@ impl Daemon {
             restart: None,
             restart_when_idle: None,
             exit: watch::channel(None).0,
-            mcp_sessions: Vec::new(),
             tasks: Vec::new(),
         };
         self.lock().runs.insert(id.clone(), run);
@@ -234,12 +243,28 @@ impl Daemon {
         uid: u32,
         sockets: RunSockets,
     ) -> Vec<JoinHandle<()>> {
-        let RunSockets { agent, ctl, proxy } = sockets;
+        let RunSockets {
+            agent,
+            hook,
+            ctl,
+            proxy,
+        } = sockets;
 
         let (daemon, run_id) = (self.clone(), id.to_owned());
         let mcp_task = tokio::spawn(async move {
             while let Ok((stream, _)) = agent.accept().await {
                 tokio::spawn(mcp::serve_conn(daemon.clone(), run_id.clone(), stream));
+            }
+        });
+
+        let (daemon, run_id) = (self.clone(), id.to_owned());
+        let hook_task = tokio::spawn(async move {
+            while let Ok((stream, _)) = hook.accept().await {
+                // One line per connection: `busy` or `idle`.
+                let mut line = String::new();
+                if BufReader::new(stream).read_line(&mut line).await.is_ok() {
+                    daemon.set_busy(&run_id, line.trim() == "busy");
+                }
             }
         });
 
@@ -265,7 +290,7 @@ impl Daemon {
             daemon.finish(&run_id, 127);
         });
 
-        vec![mcp_task, proxy_task, attach_task]
+        vec![mcp_task, hook_task, proxy_task, attach_task]
     }
 
     async fn serve_proxy(self: Arc<Self>, run_id: &str, listener: ProxyListener) {
@@ -461,12 +486,6 @@ impl Daemon {
     }
 
     // ---- agent side (per-run socket, see mcp.rs) ----
-
-    pub fn register_mcp_session(&self, run_id: &str, session: mpsc::UnboundedSender<String>) {
-        if let Some(run) = self.lock().runs.get_mut(run_id) {
-            run.mcp_sessions.push(session);
-        }
-    }
 
     /// Called by the agent's turn hooks. A restart waiting for the turn to end happens now.
     pub fn set_busy(&self, run_id: &str, busy: bool) {

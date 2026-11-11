@@ -30,7 +30,8 @@ cat >mcp-call.sh <<'EOF'
 #!/bin/bash
 # mcp-call.sh <tool> <json-arguments>: one MCP tool call over `agentbox mcp`.
 coproc M { agentbox mcp; }
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' >&"${M[1]}"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}' >&"${M[1]}"
+printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"${M[1]}"
 printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}" >&"${M[1]}"
 while read -r line <&"${M[0]}"; do case $line in *'"id":2'*) echo "$line"; break ;; esac; done
 kill "$M_PID" 2>/dev/null

@@ -30,6 +30,7 @@ use crate::rpc;
 use fsutil::{set_mode, write_atomic};
 use state::{Key, State};
 
+pub use approval::Decision;
 pub use state::Outcome;
 
 const OS: &str = std::env::consts::OS;

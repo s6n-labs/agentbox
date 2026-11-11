@@ -129,6 +129,7 @@ pub fn env_vars(dev: &DevEnv, ctx: &Ctx) -> BTreeMap<String, String> {
         ("ZDOTDIR", format!("{rd}/zdotdir")),
         ("CLAUDE_ENV_FILE", format!("{rd}/claude-env")),
         ("AGENTBOX_SOCK", format!("{rd}/agent.sock")),
+        ("AGENTBOX_HOOK_SOCK", format!("{rd}/hook.sock")),
     ];
     vars.extend(managed.map(|(k, v)| (k.to_owned(), v)));
     vars
@@ -287,6 +288,7 @@ pub fn seatbelt_profile(ctx: &Ctx) -> String {
     let rundir = sub(ctx.rundir_inside);
     let exe = format!("(literal {})", sb_str(&ctx.exe_inside.to_string_lossy()));
     let agent_sock = sb_str(&ctx.rundir_inside.join("agent.sock").to_string_lossy());
+    let hook_sock = sb_str(&ctx.rundir_inside.join("hook.sock").to_string_lossy());
     let port = ctx.proxy_port;
     let mut p = format!(
         r#"(version 1)
@@ -331,9 +333,9 @@ pub fn seatbelt_profile(ctx: &Ctx) -> String {
 (allow file-read* {rundir})
 (allow file-read* file-map-executable process-exec {exe})
 
-; Network: only the local proxy and the agent socket. No DNS (mDNSResponder) either.
+; Network: only the local proxy and the agent sockets. No DNS (mDNSResponder) either.
 (allow network-outbound (remote tcp "localhost:{port}"))
-(allow network-outbound (literal {agent_sock}))
+(allow network-outbound (literal {agent_sock}) (literal {hook_sock}))
 
 ; Mach services are denied by default so nothing can be delegated to launchd/XPC.
 (allow mach-lookup
