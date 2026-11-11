@@ -1,0 +1,18 @@
+---
+source: src/cli/review.rs
+expression: "render(&review, 70, 14).backend()"
+---
+"# reason: need jq and GitHub access                                   "
+"# policy                                                              "
+"add /network/allow/2 "github.com:443"                                 "
+"# environment (derivation changed)                                    "
+"--- a/flake.nix                                                       "
+"+++ b/flake.nix                                                       "
+"@@ -3,3 +3,3 @@                                                       "
+"   devShells.default = pkgs.mkShell {                                 "
+"-    packages = [ pkgs.cargo ];                                       "
+"+    packages = [ pkgs.cargo pkgs.jq ];                               "
+"   };                                                                 "
+"                                                                      "
+"                                                                      "
+"reject reason: use curl instead▏  (Enter: send, Esc: cancel)          "
