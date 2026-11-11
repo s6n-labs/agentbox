@@ -2,11 +2,12 @@
 
 use std::sync::Arc;
 
+use buffa::MessageField;
 use tokio::sync::watch;
 
 use crate::nixcmd::{self, tail};
 use crate::proto::*;
-use crate::rpc::RpcError;
+use connectrpc::ConnectError;
 
 use super::diff::make_diff;
 use super::state::{Outcome, Pending};
@@ -15,7 +16,14 @@ use super::{Daemon, not_found, precondition};
 /// Waiting side of an agent's request.
 pub type Decision = watch::Receiver<Option<Outcome>>;
 
-fn no_pending() -> RpcError {
+fn decided(result: String) -> DecideResponse {
+    DecideResponse {
+        result,
+        ..Default::default()
+    }
+}
+
+fn no_pending() -> ConnectError {
     not_found("no pending request for this workdir")
 }
 
@@ -76,7 +84,11 @@ impl Daemon {
     }
 
     /// What `agentbox review` shows.
-    pub(super) fn pending(&self, uid: u32, target: &Target) -> Result<PendingRes, RpcError> {
+    pub(super) fn pending(
+        &self,
+        uid: u32,
+        target: &Target,
+    ) -> Result<GetPendingResponse, ConnectError> {
         let (key, _) = self.target(uid, target)?;
         let state = self.lock();
 
@@ -95,14 +107,18 @@ impl Daemon {
             })
             .collect();
 
-        Ok(PendingRes { pending, notes })
+        Ok(GetPendingResponse {
+            pending: pending.map(MessageField::some).unwrap_or_default(),
+            notes,
+            ..Default::default()
+        })
     }
 
     pub(super) async fn decide(
         self: &Arc<Self>,
         uid: u32,
-        req: DecideReq,
-    ) -> Result<TextRes, RpcError> {
+        req: DecideRequest,
+    ) -> Result<DecideResponse, ConnectError> {
         let (key, _) = self.target(uid, &req.target)?;
 
         if !req.accept {
@@ -123,9 +139,7 @@ impl Daemon {
                 .outcome
                 .send(Some(Outcome::new("rejected", message)));
 
-            return Ok(TextRes {
-                text: "rejected".into(),
-            });
+            return Ok(decided("rejected".into()));
         }
 
         // Applied from the copy pinned at request time, so it is exactly what was reviewed.
@@ -139,9 +153,7 @@ impl Daemon {
 
         match self.apply(&key, &eval).await {
             // `apply` settled the pending request.
-            Ok(applied) => Ok(TextRes {
-                text: applied.kind().into(),
-            }),
+            Ok(applied) => Ok(decided(applied.kind().into())),
             Err(error) => {
                 let pending = self
                     .lock()
@@ -166,7 +178,7 @@ impl Daemon {
         &self,
         uid: u32,
         target: &Target,
-    ) -> Result<TextRes, RpcError> {
+    ) -> Result<ClosureDiffResponse, ConnectError> {
         let (key, owner) = self.target(uid, target)?;
 
         let drvs = self.lock().dirs.get(&key).and_then(|dir| {
@@ -179,6 +191,9 @@ impl Daemon {
         let text = nixcmd::closure_diff(&self.cfg, &owner, &old, &new)
             .await
             .map_err(precondition)?;
-        Ok(TextRes { text })
+        Ok(ClosureDiffResponse {
+            text,
+            ..Default::default()
+        })
     }
 }

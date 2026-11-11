@@ -1,20 +1,20 @@
 //! Host-side CLI commands. The CLI is a thin client: all state lives in the daemon.
 
-use std::collections::BTreeMap;
 use std::io::{IoSlice, IsTerminal, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
+use buffa::{Inline, MessageField};
+use connectrpc::{ConnectError, ErrorCode};
 use nix::sys::socket::{ControlMessage, MsgFlags, sendmsg};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
+use crate::config;
 use crate::proto::*;
-use crate::{config, rpc};
+use crate::rpc::{self, DaemonClient};
 
 /// Terminal-related variables forwarded into the sandbox.
 const FORWARDED_VARS: &[&str] = &["TERM", "COLORTERM", "LANG", "LC_ALL"];
@@ -22,43 +22,70 @@ const FORWARDED_VARS: &[&str] = &["TERM", "COLORTERM", "LANG", "LC_ALL"];
 /// Blocking handle to the daemon, targeting the current directory.
 pub struct Client {
     runtime: tokio::runtime::Runtime,
-    pub target: Target,
+    pub daemon: DaemonClient,
+    target: Target,
 }
 
 impl Client {
     pub fn new(sandbox: String) -> anyhow::Result<Self> {
+        let runtime = tokio::runtime::Runtime::new()?;
         let workdir = std::env::current_dir()?.to_string_lossy().into_owned();
 
+        // The connection is established lazily, from within the runtime.
+        let daemon = {
+            let _guard = runtime.enter();
+            rpc::client(&config::socket_path())
+        };
+
         Ok(Self {
-            runtime: tokio::runtime::Runtime::new()?,
-            target: Target { workdir, sandbox },
+            runtime,
+            daemon,
+            target: Target {
+                workdir,
+                sandbox,
+                ..Default::default()
+            },
         })
     }
 
-    pub fn call<Q: Serialize, R: DeserializeOwned>(
+    /// The `target` field of a request.
+    pub fn target(&self) -> MessageField<Target, Inline<Target>> {
+        MessageField::some(self.target.clone())
+    }
+
+    /// Runs one RPC to completion.
+    pub fn block_on<T>(
         &self,
-        method: &str,
-        req: &Q,
-    ) -> anyhow::Result<R> {
-        let socket = config::socket_path();
-        self.runtime.block_on(rpc::call(&socket, method, req))
+        call: impl Future<Output = Result<T, ConnectError>>,
+    ) -> anyhow::Result<T> {
+        self.runtime.block_on(call).map_err(describe_error)
     }
 }
 
+/// Turns an RPC error into what the user should read.
+fn describe_error(error: ConnectError) -> anyhow::Error {
+    let message = error
+        .message
+        .unwrap_or_else(|| error.code.as_str().to_owned());
+
+    if error.code == ErrorCode::Unavailable {
+        let socket = config::socket_path();
+        return anyhow!(
+            "cannot reach the agentbox daemon at {} (is `agentbox daemon` running?): {message}",
+            socket.display()
+        );
+    }
+
+    anyhow!(message)
+}
+
 /// Renders a JSON Patch as one line per operation: `add /network/allow/2 "github.com:443"`.
-fn format_patch(patch: &Value) -> Vec<String> {
-    let operations = patch.as_array().map(Vec::as_slice).unwrap_or_default();
-
-    operations
+fn format_patch(patch: &[PatchOperation]) -> Vec<String> {
+    patch
         .iter()
-        .map(|operation| {
-            let name = operation["op"].as_str().unwrap_or("?");
-            let path = operation["path"].as_str().unwrap_or("");
-
-            match operation.get("value") {
-                Some(value) => format!("{name} {path} {value}"),
-                None => format!("{name} {path}"),
-            }
+        .map(|operation| match &operation.value {
+            Some(value) => format!("{} {} {value}", operation.op, operation.path),
+            None => format!("{} {}", operation.op, operation.path),
         })
         .collect()
 }
@@ -78,7 +105,7 @@ pub fn format_diff(diff: &Diff) -> Vec<String> {
     }
     lines.extend(patch);
 
-    let derivation = if diff.drv_changed {
+    let derivation = if diff.derivation_changed {
         "changed"
     } else {
         "unchanged"
@@ -133,9 +160,10 @@ fn attach_terminal(fd_socket: &str) -> anyhow::Result<UnixStream> {
 }
 
 /// Waits for the run to exit, forwarding signals to it meanwhile.
-async fn wait_forwarding_signals(run_id: String) -> anyhow::Result<i32> {
-    let socket = config::socket_path();
-
+async fn wait_forwarding_signals(
+    daemon: DaemonClient,
+    run_id: String,
+) -> Result<i32, ConnectError> {
     let (signals, mut received) = mpsc::unbounded_channel();
     let kinds = [
         SignalKind::interrupt(),
@@ -145,7 +173,7 @@ async fn wait_forwarding_signals(run_id: String) -> anyhow::Result<i32> {
         SignalKind::window_change(),
     ];
     for kind in kinds {
-        let mut stream = signal(kind)?;
+        let mut stream = signal(kind).map_err(|e| ConnectError::internal(e.to_string()))?;
         let signals = signals.clone();
 
         tokio::spawn(async move {
@@ -155,19 +183,23 @@ async fn wait_forwarding_signals(run_id: String) -> anyhow::Result<i32> {
         });
     }
 
-    let run_ref = RunRef {
+    let exited = daemon.wait_run(WaitRunRequest {
         run_id: run_id.clone(),
-    };
-    let exited = rpc::call::<_, WaitRunRes>(&socket, "WaitRun", &run_ref);
+        ..Default::default()
+    });
     tokio::pin!(exited);
 
     loop {
         tokio::select! {
-            response = &mut exited => return Ok(response?.exit_code),
+            response = &mut exited => return Ok(response?.into_owned().exit_code),
 
             Some(signal) = received.recv() => {
-                let req = SignalReq { run_id: run_id.clone(), signal };
-                let _ = rpc::call::<_, Value>(&socket, "SignalRun", &req).await;
+                let request = SignalRunRequest {
+                    run_id: run_id.clone(),
+                    signal,
+                    ..Default::default()
+                };
+                let _ = daemon.signal_run(request).await;
             }
         }
     }
@@ -175,87 +207,104 @@ async fn wait_forwarding_signals(run_id: String) -> anyhow::Result<i32> {
 
 /// `agentbox run`: returns the command's exit code.
 pub fn run(client: &Client, yes: bool, argv: Vec<String>) -> anyhow::Result<i32> {
-    let env: BTreeMap<String, String> = FORWARDED_VARS
+    let env = FORWARDED_VARS
         .iter()
         .filter_map(|name| Some((name.to_string(), std::env::var(name).ok()?)))
         .collect();
 
-    let mut req = CreateRunReq {
-        target: client.target.clone(),
+    let mut request = CreateRunRequest {
+        target: client.target(),
         argv,
         confirm: yes,
         env,
+        ..Default::default()
     };
 
-    let (run_id, fd_socket) = loop {
-        let res: CreateRunRes = client.call("CreateRun", &req)?;
+    let response = loop {
+        let response = client
+            .block_on(client.daemon.create_run(request.clone()))?
+            .into_owned();
 
-        if let Some(diff) = res.needs_confirm {
-            confirm(&diff)?;
-            req.confirm = true;
-            continue;
-        }
+        let Some(diff) = response.needs_confirm.as_option() else {
+            break response;
+        };
 
-        match (res.run_id, res.fd_socket) {
-            (Some(run_id), Some(fd_socket)) => break (run_id, fd_socket),
-            _ => bail!("unexpected response from the daemon"),
-        }
+        confirm(diff)?;
+        request.confirm = true;
     };
 
-    let _terminal = attach_terminal(&fd_socket)?;
-    client.runtime.block_on(wait_forwarding_signals(run_id))
+    let _terminal = attach_terminal(&response.fd_socket)?;
+
+    client.block_on(wait_forwarding_signals(
+        client.daemon.clone(),
+        response.run_id,
+    ))
 }
 
 /// `agentbox reload`
 pub fn reload(client: &Client, yes: bool) -> anyhow::Result<()> {
-    let mut req = ReloadReq {
-        target: client.target.clone(),
+    let mut request = ReloadRequest {
+        target: client.target(),
         confirm: yes,
+        ..Default::default()
     };
 
     loop {
-        let res: ReloadRes = client.call("Reload", &req)?;
+        let response = client
+            .block_on(client.daemon.reload(request.clone()))?
+            .into_owned();
 
-        let Some(diff) = res.needs_confirm else {
-            println!("{}", res.result.unwrap_or_default());
+        let Some(diff) = response.needs_confirm.as_option() else {
+            println!("{}", response.result);
             return Ok(());
         };
 
-        confirm(&diff)?;
-        req.confirm = true;
+        confirm(diff)?;
+        request.confirm = true;
     }
 }
 
 /// `agentbox accept` and `agentbox reject`
 pub fn decide(client: &Client, accept: bool, reason: String) -> anyhow::Result<()> {
-    let req = DecideReq {
-        target: client.target.clone(),
+    let request = DecideRequest {
+        target: client.target(),
         accept,
         reason,
+        ..Default::default()
     };
-    let res: TextRes = client.call("Decide", &req)?;
+    let response = client.block_on(client.daemon.decide(request))?.into_owned();
 
-    println!("{}", res.text);
+    println!("{}", response.result);
     Ok(())
 }
 
 /// `agentbox policy`
 pub fn policy(client: &Client, effective: bool) -> anyhow::Result<()> {
-    let req = PolicyReq {
-        target: client.target.clone(),
+    let request = GetPolicyRequest {
+        target: client.target(),
         effective,
+        ..Default::default()
     };
-    let policy: Value = client.call("GetPolicy", &req)?;
+    let response = client
+        .block_on(client.daemon.get_policy(request))?
+        .into_owned();
 
+    let policy: Value = serde_json::from_str(&response.policy_json)?;
     println!("{}", serde_json::to_string_pretty(&policy)?);
     Ok(())
 }
 
 /// `agentbox denials`
 pub fn denials(client: &Client) -> anyhow::Result<()> {
-    let res: DenialsRes = client.call("ListDenials", &client.target)?;
+    let request = ListDenialsRequest {
+        target: client.target(),
+        ..Default::default()
+    };
+    let response = client
+        .block_on(client.daemon.list_denials(request))?
+        .into_owned();
 
-    for denial in res.denials {
+    for denial in response.denials {
         println!(
             "{}\t{}\t{}\t{}",
             denial.time, denial.run_id, denial.kind, denial.target
@@ -266,12 +315,15 @@ pub fn denials(client: &Client) -> anyhow::Result<()> {
 
 /// `agentbox explain`
 pub fn explain(client: &Client, what: String) -> anyhow::Result<()> {
-    let req = ExplainReq {
-        target: client.target.clone(),
+    let request = ExplainRequest {
+        target: client.target(),
         what,
+        ..Default::default()
     };
-    let res: TextRes = client.call("Explain", &req)?;
+    let response = client
+        .block_on(client.daemon.explain(request))?
+        .into_owned();
 
-    println!("{}", res.text);
+    println!("{}", response.text);
     Ok(())
 }

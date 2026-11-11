@@ -34,10 +34,15 @@
             fileset = lib.fileset.unions [
               ./Cargo.toml
               ./Cargo.lock
+              ./build.rs
+              ./proto
               ./src
             ];
           };
           cargoLock.lockFile = ./Cargo.lock;
+
+          # build.rs generates the Connect RPC code from proto/ with this protoc.
+          PROTOC = "${nixpkgs.legacyPackages.${system}.protobuf}/bin/protoc";
         };
       });
     };

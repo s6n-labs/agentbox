@@ -8,6 +8,7 @@ mod diff;
 mod environment;
 mod fsutil;
 mod run;
+mod service;
 mod spawn;
 mod state;
 
@@ -15,9 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::Context;
+use connectrpc::ConnectError;
 use nix::unistd::{Uid, User};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -25,7 +25,7 @@ use crate::config::{self, Config, is_root};
 use crate::nixcmd::{Eval, Owner};
 use crate::policy::Policy;
 use crate::proto::Target;
-use crate::rpc::{self, RpcError};
+use crate::rpc;
 
 use fsutil::{set_mode, write_atomic};
 use state::{Key, State};
@@ -51,16 +51,16 @@ pub struct Daemon {
     state: Mutex<State>,
 }
 
-fn precondition(e: impl ToString) -> RpcError {
-    RpcError::new("failed_precondition", e)
+fn precondition(e: impl ToString) -> ConnectError {
+    ConnectError::failed_precondition(e.to_string())
 }
 
-fn internal(e: impl ToString) -> RpcError {
-    RpcError::new("internal", e)
+fn internal(e: impl ToString) -> ConnectError {
+    ConnectError::internal(e.to_string())
 }
 
-fn not_found(e: impl ToString) -> RpcError {
-    RpcError::new("not_found", e)
+fn not_found(e: impl ToString) -> ConnectError {
+    ConnectError::not_found(e.to_string())
 }
 
 fn is_valid_sandbox_name(name: &str) -> bool {
@@ -94,7 +94,7 @@ impl Daemon {
     }
 
     /// Resolves the workdir a request is about and checks that the peer owns it.
-    fn target(&self, uid: u32, target: &Target) -> Result<(Key, Owner), RpcError> {
+    fn target(&self, uid: u32, target: &Target) -> Result<(Key, Owner), ConnectError> {
         let workdir = std::fs::canonicalize(&target.workdir)
             .map_err(|e| not_found(format!("{}: {e}", target.workdir)))?;
 
@@ -102,11 +102,15 @@ impl Daemon {
         let owned = uid == 0 || std::os::unix::fs::MetadataExt::uid(&meta) == uid;
         if !meta.is_dir() || !owned {
             let message = format!("{} is not a directory you own", workdir.display());
-            return Err(RpcError::new("permission_denied", message));
+            return Err(ConnectError::permission_denied(message));
         }
 
-        if !is_valid_sandbox_name(&target.sandbox) {
-            return Err(RpcError::new("invalid_argument", "invalid sandbox name"));
+        let sandbox = match target.sandbox.as_str() {
+            "" => "default",
+            name => name,
+        };
+        if !is_valid_sandbox_name(sandbox) {
+            return Err(ConnectError::invalid_argument("invalid sandbox name"));
         }
 
         let user = User::from_uid(Uid::from_raw(uid))
@@ -122,40 +126,10 @@ impl Daemon {
         };
         let key = Key {
             workdir,
-            sandbox: target.sandbox.clone(),
+            sandbox: sandbox.to_owned(),
         };
         Ok((key, owner))
     }
-
-    /// Dispatches one RPC of the `agentbox.v1.Daemon` service.
-    async fn handle(self: Arc<Self>, uid: u32, method: &str, body: &[u8]) -> RpcResult {
-        match method {
-            "CreateRun" => reply(self.create_run(uid, parse(body)?).await?),
-            "WaitRun" => reply(self.wait_run(uid, parse(body)?).await?),
-            "SignalRun" => reply(self.signal_run(uid, parse(body)?)?),
-            "Reload" => reply(self.reload(uid, parse(body)?).await?),
-            "GetPending" => reply(self.pending(uid, &parse(body)?)?),
-            "Decide" => reply(self.decide(uid, parse(body)?).await?),
-            "ClosureDiff" => reply(self.closure_diff(uid, &parse(body)?).await?),
-            "GetPolicy" => reply(self.policy(uid, parse(body)?).await?),
-            "Explain" => reply(self.explain(uid, parse(body)?).await?),
-            "ListDenials" => reply(self.denials(uid, &parse(body)?)?),
-            _ => Err(RpcError::new(
-                "unimplemented",
-                format!("unknown method {method:?}"),
-            )),
-        }
-    }
-}
-
-type RpcResult = Result<Vec<u8>, RpcError>;
-
-fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, RpcError> {
-    serde_json::from_slice(body).map_err(|e| RpcError::new("invalid_argument", e))
-}
-
-fn reply<T: Serialize>(response: T) -> RpcResult {
-    serde_json::to_vec(&response).map_err(internal)
 }
 
 /// Every run died with the previous daemon: start from empty run directories and GC roots.
@@ -250,10 +224,7 @@ pub async fn main() -> anyhow::Result<()> {
     let (listener, socket) = bind_socket()?;
     eprintln!("agentbox: listening on {}", socket.display());
 
-    let serve = rpc::serve(listener, move |uid, method, body| {
-        let daemon = daemon.clone();
-        async move { daemon.handle(uid, &method, &body).await }
-    });
+    let serve = rpc::serve(listener, service::router(daemon));
 
     let mut terminate = signal(SignalKind::terminate())?;
     tokio::select! {

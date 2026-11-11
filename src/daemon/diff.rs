@@ -6,7 +6,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::nixcmd::Eval;
-use crate::proto::Diff;
+use crate::proto::{Diff, PatchOperation};
 
 /// Directories that never hold flake sources worth diffing.
 const SKIPPED_DIRS: &[&str] = &["target", "node_modules"];
@@ -77,6 +77,22 @@ fn text_diff(old_pinned: Option<&str>, new_pinned: &str) -> String {
     out
 }
 
+/// Converts an RFC 6902 patch into its protobuf form.
+fn patch_operations(patch: &json_patch::Patch) -> Vec<PatchOperation> {
+    let json = serde_json::to_value(patch).unwrap_or_default();
+    let operations = json.as_array().map(Vec::as_slice).unwrap_or_default();
+
+    operations
+        .iter()
+        .map(|operation| PatchOperation {
+            op: operation["op"].as_str().unwrap_or_default().to_owned(),
+            path: operation["path"].as_str().unwrap_or_default().to_owned(),
+            value: operation.get("value").map(Value::to_string),
+            ..Default::default()
+        })
+        .collect()
+}
+
 /// Describes how `new` differs from the approved state `old`.
 pub fn make_diff(old: Option<&Eval>, new: &Eval, reason: Option<String>) -> Diff {
     let old_policy = old.map_or(Value::Null, |eval| eval.policy.clone());
@@ -84,8 +100,9 @@ pub fn make_diff(old: Option<&Eval>, new: &Eval, reason: Option<String>) -> Diff
 
     Diff {
         reason,
-        policy_patch: serde_json::to_value(patch).unwrap_or_default(),
+        policy_patch: patch_operations(&patch),
         text_diff: text_diff(old.map(|eval| eval.pinned.as_str()), &new.pinned),
-        drv_changed: old.is_none_or(|eval| eval.drv != new.drv),
+        derivation_changed: old.is_none_or(|eval| eval.drv != new.drv),
+        ..Default::default()
     }
 }

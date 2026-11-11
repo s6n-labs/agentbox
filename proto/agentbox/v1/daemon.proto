@@ -1,0 +1,179 @@
+syntax = "proto3";
+
+package agentbox.v1;
+
+// The host daemon's API, served on a Unix socket that is never visible inside a
+// sandbox. A request on it is therefore a human's decision; agents only get the
+// MCP tools on their per-run socket.
+service DaemonService {
+  // Starts a run: evaluates the current files, applies them, and prepares a sandbox.
+  // The CLI then passes its terminal to `fd_socket` and calls WaitRun.
+  rpc CreateRun(CreateRunRequest) returns (CreateRunResponse);
+
+  // Blocks until the run's command exits.
+  rpc WaitRun(WaitRunRequest) returns (WaitRunResponse);
+
+  // Forwards a signal to the run's process group.
+  rpc SignalRun(SignalRunRequest) returns (SignalRunResponse);
+
+  // Re-evaluates the current files and applies them to every run of the workdir.
+  // No approval: the request itself is the human's decision.
+  rpc Reload(ReloadRequest) returns (ReloadResponse);
+
+  // Returns the agent's pending request for the workdir, if any.
+  rpc GetPending(GetPendingRequest) returns (GetPendingResponse);
+
+  // Accepts or rejects the pending request.
+  rpc Decide(DecideRequest) returns (DecideResponse);
+
+  // Package-level diff between the applied and the requested environment.
+  rpc ClosureDiff(ClosureDiffRequest) returns (ClosureDiffResponse);
+
+  // Evaluates the policy of the current files.
+  rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse);
+
+  // Says which layer and rule allows or denies a path or domain.
+  rpc Explain(ExplainRequest) returns (ExplainResponse);
+
+  // Lists accesses that were denied in the workdir's runs.
+  rpc ListDenials(ListDenialsRequest) returns (ListDenialsResponse);
+}
+
+// What a request is about: a working directory and one of its sandboxes.
+message Target {
+  string workdir = 1;
+  // Name under `agentSandboxes.<system>`.
+  string sandbox = 2;
+}
+
+// One operation of an RFC 6902 JSON Patch.
+message PatchOperation {
+  string op = 1;
+  string path = 2;
+  // JSON-encoded value, for operations that carry one.
+  optional string value = 3;
+}
+
+// How an evaluation differs from the last approved state.
+message Diff {
+  // Reason given by the agent, if this is an agent's request.
+  optional string reason = 1;
+  // Changes to the evaluated policy.
+  repeated PatchOperation policy_patch = 2;
+  // Unified diff of the nix files and flake.lock.
+  string text_diff = 3;
+  bool derivation_changed = 4;
+}
+
+message CreateRunRequest {
+  Target target = 1;
+  repeated string argv = 2;
+  // Accept nix file edits an agent may have left unapproved.
+  bool confirm = 3;
+  // Terminal-related variables forwarded from the CLI (TERM etc.).
+  map<string, string> env = 4;
+}
+
+message CreateRunResponse {
+  // Set when unapproved edits need confirmation; nothing was started.
+  optional Diff needs_confirm = 1;
+  string run_id = 2;
+  // Socket the CLI passes its stdio to (SCM_RIGHTS) and keeps open while it lives.
+  string fd_socket = 3;
+}
+
+message WaitRunRequest {
+  string run_id = 1;
+}
+
+message WaitRunResponse {
+  int32 exit_code = 1;
+}
+
+message SignalRunRequest {
+  string run_id = 1;
+  int32 signal = 2;
+}
+
+message SignalRunResponse {}
+
+message ReloadRequest {
+  Target target = 1;
+  // Accept nix file edits an agent may have left unapproved.
+  bool confirm = 2;
+}
+
+message ReloadResponse {
+  // Set when unapproved edits need confirmation; nothing was applied.
+  optional Diff needs_confirm = 1;
+  // `unchanged`, `applied` or `restart_scheduled`.
+  string result = 2;
+}
+
+message GetPendingRequest {
+  Target target = 1;
+}
+
+message GetPendingResponse {
+  optional Diff pending = 1;
+  // Status lines, e.g. an approved change waiting for the agent's turn to end.
+  repeated string notes = 2;
+}
+
+message DecideRequest {
+  Target target = 1;
+  bool accept = 2;
+  // Returned to the agent when rejecting.
+  string reason = 3;
+}
+
+message DecideResponse {
+  // `rejected`, `applied` or `restart_scheduled`.
+  string result = 1;
+}
+
+message ClosureDiffRequest {
+  Target target = 1;
+}
+
+message ClosureDiffResponse {
+  string text = 1;
+}
+
+message GetPolicyRequest {
+  Target target = 1;
+  // Repository layer ∩ host layer, instead of the repository layer alone.
+  bool effective = 2;
+}
+
+message GetPolicyResponse {
+  // The policy as JSON.
+  string policy_json = 1;
+}
+
+message ExplainRequest {
+  Target target = 1;
+  // A path, or `host[:port]`.
+  string what = 2;
+}
+
+message ExplainResponse {
+  string text = 1;
+}
+
+message ListDenialsRequest {
+  Target target = 1;
+}
+
+message Denial {
+  string run_id = 1;
+  // Unix seconds.
+  uint64 time = 2;
+  // What kind of access was denied, e.g. `network`.
+  string kind = 3;
+  string target = 4;
+}
+
+message ListDenialsResponse {
+  repeated Denial denials = 1;
+}

@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use buffa::MessageField;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
-use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::{mpsc, watch};
@@ -19,9 +19,9 @@ use crate::config::{self, is_root};
 use crate::nixcmd::Owner;
 use crate::policy::Policy;
 use crate::proto::*;
-use crate::rpc::RpcError;
 use crate::sandbox::{BRIDGE_PORT, DevEnv};
 use crate::{mcp, proxy};
+use connectrpc::ConnectError;
 
 use super::environment::trigger_restart;
 use super::fsutil::{recv_stdio, set_mode, write_atomic};
@@ -55,6 +55,13 @@ struct RunSockets {
     agent: UnixListener,
     ctl: UnixListener,
     proxy: ProxyListener,
+}
+
+fn exit_response(exit_code: i32) -> WaitRunResponse {
+    WaitRunResponse {
+        exit_code,
+        ..Default::default()
+    }
 }
 
 fn now() -> u64 {
@@ -145,18 +152,18 @@ impl Daemon {
     pub(super) async fn create_run(
         self: &Arc<Self>,
         uid: u32,
-        req: CreateRunReq,
-    ) -> Result<CreateRunRes, RpcError> {
+        req: CreateRunRequest,
+    ) -> Result<CreateRunResponse, ConnectError> {
         if req.argv.is_empty() {
-            return Err(RpcError::new("invalid_argument", "no command given"));
+            return Err(ConnectError::invalid_argument("no command given"));
         }
 
         let (key, owner) = self.target(uid, &req.target)?;
         let eval = self.evaluate(&key, &owner).await.map_err(precondition)?;
 
         if let Some(diff) = self.unapproved_changes(&key, &eval, req.confirm) {
-            return Ok(CreateRunRes {
-                needs_confirm: Some(diff),
+            return Ok(CreateRunResponse {
+                needs_confirm: MessageField::some(diff),
                 ..Default::default()
             });
         }
@@ -213,10 +220,10 @@ impl Daemon {
             None => tasks.iter().for_each(JoinHandle::abort),
         }
 
-        Ok(CreateRunRes {
-            run_id: Some(id),
-            fd_socket: Some(paths.ctl.to_string_lossy().into_owned()),
-            needs_confirm: None,
+        Ok(CreateRunResponse {
+            run_id: id,
+            fd_socket: paths.ctl.to_string_lossy().into_owned(),
+            ..Default::default()
         })
     }
 
@@ -376,6 +383,7 @@ impl Daemon {
             time: now(),
             kind: "network".into(),
             target: format!("{host}:{port}"),
+            ..Default::default()
         });
         false
     }
@@ -383,45 +391,62 @@ impl Daemon {
     // ---- RPCs ----
 
     /// Runs `f` on a run after checking that the peer owns it.
-    fn with_run<T>(&self, uid: u32, id: &str, f: impl FnOnce(&Run) -> T) -> Result<T, RpcError> {
+    fn with_run<T>(
+        &self,
+        uid: u32,
+        id: &str,
+        f: impl FnOnce(&Run) -> T,
+    ) -> Result<T, ConnectError> {
         let state = self.lock();
         let run = state.runs.get(id).ok_or_else(|| not_found("no such run"))?;
 
         if uid != 0 && run.owner.uid != uid {
-            return Err(RpcError::new("permission_denied", "not your run"));
+            return Err(ConnectError::permission_denied("not your run"));
         }
         Ok(f(run))
     }
 
-    pub(super) async fn wait_run(&self, uid: u32, req: RunRef) -> Result<WaitRunRes, RpcError> {
+    pub(super) async fn wait_run(
+        &self,
+        uid: u32,
+        req: WaitRunRequest,
+    ) -> Result<WaitRunResponse, ConnectError> {
         // The command may have exited before the CLI got here.
         if let Some(exit_code) = self.lock().exited.remove(&req.run_id) {
-            return Ok(WaitRunRes { exit_code });
+            return Ok(exit_response(exit_code));
         }
 
         let mut exit = self.with_run(uid, &req.run_id, |run| run.exit.subscribe())?;
         loop {
             if let Some(exit_code) = *exit.borrow() {
                 self.lock().exited.remove(&req.run_id);
-                return Ok(WaitRunRes { exit_code });
+                return Ok(exit_response(exit_code));
             }
 
             exit.changed().await.map_err(|_| internal("run vanished"))?;
         }
     }
 
-    pub(super) fn signal_run(&self, uid: u32, req: SignalReq) -> Result<Value, RpcError> {
+    pub(super) fn signal_run(
+        &self,
+        uid: u32,
+        req: SignalRunRequest,
+    ) -> Result<SignalRunResponse, ConnectError> {
         let pgid = self.with_run(uid, &req.run_id, |run| run.pgid)?;
-        let signal =
-            Signal::try_from(req.signal).map_err(|e| RpcError::new("invalid_argument", e))?;
+        let signal = Signal::try_from(req.signal)
+            .map_err(|e| ConnectError::invalid_argument(e.to_string()))?;
 
         if let Some(pgid) = pgid {
             let _ = killpg(Pid::from_raw(pgid), signal);
         }
-        Ok(json!({}))
+        Ok(SignalRunResponse::default())
     }
 
-    pub(super) fn denials(&self, uid: u32, target: &Target) -> Result<DenialsRes, RpcError> {
+    pub(super) fn denials(
+        &self,
+        uid: u32,
+        target: &Target,
+    ) -> Result<ListDenialsResponse, ConnectError> {
         let (key, _) = self.target(uid, target)?;
         let state = self.lock();
 
@@ -429,7 +454,10 @@ impl Daemon {
             Some(dir) => dir.denials.iter().cloned().collect(),
             None => Vec::new(),
         };
-        Ok(DenialsRes { denials })
+        Ok(ListDenialsResponse {
+            denials,
+            ..Default::default()
+        })
     }
 
     // ---- agent side (per-run socket, see mcp.rs) ----

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use buffa::MessageField;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
@@ -11,8 +12,8 @@ use serde_json::{Value, json};
 use crate::nixcmd::{self, Eval, Owner};
 use crate::policy::{self, Policy};
 use crate::proto::*;
-use crate::rpc::RpcError;
 use crate::sandbox::{self, Ctx, DevEnv};
+use connectrpc::ConnectError;
 
 use super::diff::make_diff;
 use super::fsutil::write_atomic;
@@ -66,6 +67,13 @@ pub fn trigger_restart(run: &mut Run, message: String) {
 
     if let Some(pgid) = run.pgid {
         let _ = killpg(Pid::from_raw(pgid), Signal::SIGTERM);
+    }
+}
+
+fn policy_response(policy: &Value) -> GetPolicyResponse {
+    GetPolicyResponse {
+        policy_json: policy.to_string(),
+        ..Default::default()
     }
 }
 
@@ -225,15 +233,15 @@ impl Daemon {
     pub(super) async fn reload(
         self: &Arc<Self>,
         uid: u32,
-        req: ReloadReq,
-    ) -> Result<ReloadRes, RpcError> {
+        req: ReloadRequest,
+    ) -> Result<ReloadResponse, ConnectError> {
         let (key, owner) = self.target(uid, &req.target)?;
         let eval = self.evaluate(&key, &owner).await.map_err(precondition)?;
 
         if let Some(diff) = self.unapproved_changes(&key, &eval, req.confirm) {
-            return Ok(ReloadRes {
-                needs_confirm: Some(diff),
-                result: None,
+            return Ok(ReloadResponse {
+                needs_confirm: MessageField::some(diff),
+                ..Default::default()
             });
         }
 
@@ -244,19 +252,23 @@ impl Daemon {
             self.apply(&key, &eval).await.map_err(precondition)?.kind()
         };
 
-        Ok(ReloadRes {
-            needs_confirm: None,
-            result: Some(result.into()),
+        Ok(ReloadResponse {
+            result: result.into(),
+            ..Default::default()
         })
     }
 
     /// Policy of the files as they are now (not necessarily what is applied).
-    pub(super) async fn policy(&self, uid: u32, req: PolicyReq) -> Result<Value, RpcError> {
+    pub(super) async fn policy(
+        &self,
+        uid: u32,
+        req: GetPolicyRequest,
+    ) -> Result<GetPolicyResponse, ConnectError> {
         let (key, owner) = self.target(uid, &req.target)?;
         let eval = self.evaluate(&key, &owner).await.map_err(precondition)?;
 
         if !req.effective {
-            return Ok(eval.policy);
+            return Ok(policy_response(&eval.policy));
         }
 
         let effective = self.effective(&eval).map_err(precondition)?;
@@ -267,10 +279,15 @@ impl Daemon {
                 "writable": self.cfg.fs.writable,
             },
         });
-        Ok(json)
+
+        Ok(policy_response(&json))
     }
 
-    pub(super) async fn explain(&self, uid: u32, req: ExplainReq) -> Result<TextRes, RpcError> {
+    pub(super) async fn explain(
+        &self,
+        uid: u32,
+        req: ExplainRequest,
+    ) -> Result<ExplainResponse, ConnectError> {
         let (key, owner) = self.target(uid, &req.target)?;
 
         let approved = self.lock().approved(&key).cloned();
@@ -281,7 +298,10 @@ impl Daemon {
 
         let repo = Policy::parse(&eval.policy).map_err(precondition)?;
         let text = policy::explain(&repo, &self.cfg, OS, &key.workdir, &req.what);
-        Ok(TextRes { text })
+        Ok(ExplainResponse {
+            text,
+            ..Default::default()
+        })
     }
 }
 
