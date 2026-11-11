@@ -1,0 +1,42 @@
+(version 1)
+(deny default)
+(allow process-fork)
+(allow signal (target same-sandbox))
+(allow sysctl-read)
+(allow pseudo-tty)
+
+; Path traversal only; no directory listings outside the rules below.
+(allow file-read-metadata)
+
+; Nix store: every path is reachable by name, but the store itself cannot be listed.
+(allow file-read* file-map-executable process-exec (subpath "/nix/store"))
+(deny file-read-data (literal "/nix/store"))
+(deny file-read* file-map-executable process-exec (subpath "/nix/store/.links"))
+(deny file-read* file-write* (subpath "/nix/var/nix"))
+
+; Minimum the dynamic linker and libSystem need.
+(allow file-read* file-map-executable
+  (subpath "/usr/lib")
+  (subpath "/System/Library")
+  (subpath "/System/Cryptexes")
+  (subpath "/System/Volumes/Preboot/Cryptexes")
+  (subpath "/private/var/db/timezone")
+  (subpath "/usr/share/zoneinfo")
+  (subpath "/usr/share/locale")
+  (literal "/private/etc/localtime")
+  (literal "/private/etc/passwd")
+  (literal "/private/etc/protocols")
+  (literal "/private/etc/services")
+  (literal "/dev/dtracehelper"))
+(allow file-read* file-write* file-ioctl
+  (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty")
+  (literal "/dev/random") (literal "/dev/urandom")
+  (regex #"^/dev/ttys[0-9]+$") (regex #"^/dev/fd/[0-9]+$"))
+(deny file-read* file-write* (subpath "/Users") (subpath "/private/var/folders"))
+
+; Mach services are denied by default so nothing can be delegated to launchd/XPC.
+(allow mach-lookup
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.logd"))

@@ -1,0 +1,6 @@
+; capability: xcode
+(allow file-read* file-map-executable process-exec
+  (subpath "/Applications/Xcode.app")
+  (subpath "/Library/Developer")
+  (literal "/usr/bin/xcrun") (literal "/usr/bin/xcode-select"))
+(allow file-read* (subpath "/private/var/db/xcode_select_link"))
